@@ -1,0 +1,198 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================================================
+   HiveX design tokens
+   --------------------------------------------------------------------------
+   Light is the default register; `.dark` on <html> swaps the same variable
+   names. Accent lineage and contrast reasoning: Docs/TECHNICAL HR_OS.md §10 —
+   brand orange #FF5A24 only reaches 3.12:1 on white, so light mode uses the
+   deeper #C53D0D for the same role.
+   ========================================================================== */
+
+@layer base {
+  :root {
+    --background: 40 20% 98%;
+    --foreground: 24 12% 12%;
+
+    --surface: 0 0% 100%;
+    --surface-raised: 0 0% 100%;
+    --surface-sunken: 36 16% 96%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 24 12% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 24 12% 12%;
+
+    --muted: 36 14% 94%;
+    --muted-foreground: 25 8% 44%;
+
+    --border: 30 12% 89%;
+    --border-strong: 30 10% 80%;
+    --input: 30 12% 87%;
+
+    /* Brand accent — primary CTA + active/selected state only. */
+    --primary: 16 88% 41%;        /* #C53D0D */
+    --primary-foreground: 0 0% 100%;
+    --primary-soft: 16 90% 95%;
+
+    --ring: 16 88% 41%;
+
+    --success: 152 55% 32%;
+    --success-foreground: 0 0% 100%;
+    --success-soft: 152 45% 94%;
+
+    --warning: 35 88% 42%;
+    --warning-foreground: 0 0% 100%;
+    --warning-soft: 38 92% 94%;
+
+    --destructive: 358 66% 46%;
+    --destructive-foreground: 0 0% 100%;
+    --destructive-soft: 358 78% 96%;
+
+    --info: 214 70% 44%;
+    --info-foreground: 0 0% 100%;
+    --info-soft: 214 84% 95%;
+
+    --dead-end: 262 40% 46%;
+    --dead-end-foreground: 0 0% 100%;
+    --dead-end-soft: 262 60% 96%;
+
+    --shadow-color: 24 20% 20%;
+
+    --radius: 0.625rem;      /* structural: tables, inputs, buttons */
+    --radius-xl: 1.125rem;   /* soft surfaces: stat cards, dialogs, panels */
+  }
+
+  .dark {
+    --background: 24 10% 7%;
+    --foreground: 36 18% 94%;
+
+    --surface: 24 8% 10%;
+    --surface-raised: 24 8% 13%;
+    --surface-sunken: 24 10% 8%;
+
+    --card: 24 8% 11%;
+    --card-foreground: 36 18% 94%;
+
+    --popover: 24 9% 13%;
+    --popover-foreground: 36 18% 94%;
+
+    --muted: 24 7% 17%;
+    --muted-foreground: 30 8% 62%;
+
+    --border: 24 7% 19%;
+    --border-strong: 24 7% 28%;
+    --input: 24 7% 22%;
+
+    --primary: 14 100% 57%;      /* #FF5A24 */
+    --primary-foreground: 24 40% 8%;
+    --primary-soft: 14 60% 16%;
+
+    --ring: 14 100% 57%;
+
+    --success: 152 52% 48%;
+    --success-foreground: 152 60% 8%;
+    --success-soft: 152 40% 15%;
+
+    --warning: 38 92% 56%;
+    --warning-foreground: 38 80% 10%;
+    --warning-soft: 38 60% 16%;
+
+    --destructive: 358 78% 62%;
+    --destructive-foreground: 358 60% 10%;
+    --destructive-soft: 358 45% 18%;
+
+    --info: 212 88% 64%;
+    --info-foreground: 212 70% 10%;
+    --info-soft: 212 50% 18%;
+
+    --dead-end: 262 62% 68%;
+    --dead-end-foreground: 262 50% 10%;
+    --dead-end-soft: 262 40% 20%;
+
+    --shadow-color: 0 0% 0%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    text-rendering: optimizeLegibility;
+  }
+
+  h1, h2, h3, h4 {
+    @apply font-display tracking-[-0.015em];
+  }
+
+  /* One focus treatment everywhere. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.22);
+  }
+}
+
+@layer components {
+  /* Dense scrollbars for rails, panels and tables. */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border-strong)) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: hsl(var(--border-strong));
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  /* Very restrained ambient wash behind hero surfaces — neutral, never
+     brand-tinted, so the accent keeps its single meaning (HR OS §10). */
+  .ambient {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .ambient::before {
+    content: '';
+    position: absolute;
+    top: -40%;
+    right: -10%;
+    width: 42rem;
+    height: 42rem;
+    border-radius: 9999px;
+    background: radial-gradient(circle, hsl(var(--foreground) / 0.05), transparent 62%);
+  }
+
+  .grid-fade {
+    background-image:
+      linear-gradient(to right, hsl(var(--border) / 0.7) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(var(--border) / 0.7) 1px, transparent 1px);
+    background-size: 44px 44px;
+    -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 78%);
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 78%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
