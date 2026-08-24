@@ -1,9 +1,6 @@
-import type {
-  IntegrationCategory,
-  IntegrationDefinition,
-  IntegrationResource,
-  OSId,
-} from '@/platform/types'
+import type { IntegrationCategory, IntegrationDefinition, OSId } from '@/platform/types'
+
+import { OS_REGISTRY } from './os-registry'
 
 /**
  * Integration catalog.
@@ -464,6 +461,13 @@ export function getIntegration(id: string): IntegrationDefinition | undefined {
   return INTEGRATION_MAP[id]
 }
 
+/**
+ * Catalog cross-reference: integrations that name this product.
+ *
+ * Presentation only — it drives the "Used by" tiles. What a product may
+ * actually *consume* comes from its own registry entry, which is the narrower
+ * and authoritative list; see `serviceIdsForOS`.
+ */
 export function integrationsForOS(osId: OSId): IntegrationDefinition[] {
   return INTEGRATIONS.filter((i) => i.usedBy.includes(osId))
 }
@@ -477,54 +481,75 @@ export const PHASE_META: Record<number, { label: string; note: string }> = {
   5: { label: 'Phase 5', note: 'Meeting notes and additional storage.' },
 }
 
-/**
- * Resources a provider exposes after authorization. In production these come
- * from the discovery endpoint (`/auth/google/discovery` for the Google
- * pipeline, the Nango proxy for everything else); here they are fixtures with
- * the same shape.
- */
-export const DISCOVERABLE_RESOURCES: Record<string, IntegrationResource[]> = {
-  ga4: [
-    { id: '318294771', name: 'Northwind Retail — Web', subtitle: 'GA4 property', kind: 'property' },
-    { id: '299104553', name: 'Northwind Retail — App', subtitle: 'GA4 property', kind: 'property' },
-    { id: '402118876', name: 'Meridian Health', subtitle: 'GA4 property', kind: 'property' },
-    { id: '377209114', name: 'Lumen Studio', subtitle: 'GA4 property', kind: 'property' },
-    { id: '341887290', name: 'Coastline Legal', subtitle: 'GA4 property', kind: 'property' },
-  ],
-  gsc: [
-    { id: 'sc-domain:northwind.com', name: 'northwind.com', subtitle: 'Domain property', kind: 'site' },
-    { id: 'https://meridianhealth.io/', name: 'meridianhealth.io', subtitle: 'URL prefix', kind: 'site' },
-    { id: 'https://lumen.studio/', name: 'lumen.studio', subtitle: 'URL prefix', kind: 'site' },
-    { id: 'sc-domain:coastlinelegal.co', name: 'coastlinelegal.co', subtitle: 'Domain property', kind: 'site' },
-  ],
-  'google-ads': [
-    { id: '482-119-3374', name: 'Northwind Retail', subtitle: 'Manager sub-account', kind: 'account' },
-    { id: '771-204-8890', name: 'Meridian Health', subtitle: 'Manager sub-account', kind: 'account' },
-    { id: '904-556-1123', name: 'Lumen Studio', subtitle: 'Manager sub-account', kind: 'account' },
-  ],
-  gbp: [
-    { id: 'loc/8827311', name: 'Northwind Retail — Flagship', subtitle: 'Seattle, WA', kind: 'location' },
-    { id: 'loc/8827318', name: 'Northwind Retail — Bellevue', subtitle: 'Bellevue, WA', kind: 'location' },
-    { id: 'loc/5510223', name: 'Meridian Health — Clinic', subtitle: 'Portland, OR', kind: 'location' },
-  ],
-  slack: [
-    { id: 'C01ANALYTICS', name: '#analytics', subtitle: '38 members', kind: 'channel' },
-    { id: 'C02CLIENTS', name: '#client-updates', subtitle: '54 members', kind: 'channel' },
-    { id: 'C03SEO', name: '#seo-team', subtitle: '17 members', kind: 'channel' },
-  ],
-  outlook: [
-    { id: 'inbox', name: 'Inbox', subtitle: 'Primary mailbox', kind: 'folder' },
-    { id: 'reports', name: 'Client reports', subtitle: 'Shared folder', kind: 'folder' },
-  ],
-  notion: [
-    { id: 'db-playbooks', name: 'Client playbooks', subtitle: 'Database', kind: 'database' },
-    { id: 'db-briefs', name: 'Campaign briefs', subtitle: 'Database', kind: 'database' },
-  ],
-}
-
-export function resourcesFor(integrationId: string): IntegrationResource[] {
-  return DISCOVERABLE_RESOURCES[integrationId] ?? []
-}
-
-/** The Google connect flow in onboarding covers exactly these four products. */
 export const GOOGLE_DATA_SOURCE_IDS = ['ga4', 'gsc', 'google-ads', 'gbp'] as const
+
+/* -------------------------------------------------------------------------- */
+/* Provider grouping                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Which integrations share a single authorization.
+ *
+ * One Google login grants GA4, Search Console, Ads and Business Profile at
+ * once, so those four are *services* of one account rather than four separate
+ * connections. Everything else authorizes on its own, so its provider key is
+ * just its own id.
+ */
+export const GOOGLE_PROVIDER = 'google'
+
+export function providerKeyFor(integrationId: string): string {
+  const integration = INTEGRATION_MAP[integrationId]
+  if (!integration) return integrationId
+  return integration.authType === 'google_oauth' ? GOOGLE_PROVIDER : integration.id
+}
+
+/** Integration ids granted by one authorization of this provider. */
+export function servicesForProvider(provider: string): string[] {
+  if (provider === GOOGLE_PROVIDER) {
+    return INTEGRATIONS.filter((i) => i.authType === 'google_oauth').map((i) => i.id)
+  }
+  return INTEGRATION_MAP[provider] ? [provider] : []
+}
+
+/** Display name for a provider family. */
+export function providerName(provider: string): string {
+  if (provider === GOOGLE_PROVIDER) return 'Google'
+  return INTEGRATION_MAP[provider]?.name ?? provider
+}
+
+/**
+ * The integration whose branding represents a provider family.
+ *
+ * Google Analytics stands in for the Google family so an account card carries a
+ * recognisable mark without inventing a second icon set.
+ */
+export function providerIconIntegration(provider: string): IntegrationDefinition {
+  if (provider === GOOGLE_PROVIDER) return INTEGRATION_MAP.ga4
+  return INTEGRATION_MAP[provider] ?? INTEGRATION_MAP.ga4
+}
+
+/**
+ * Integration ids a product can consume.
+ *
+ * This is what makes an organization account visible to a new product: the
+ * account lists the services it grants, the product lists the services it uses,
+ * and the intersection decides. Nothing has to be re-authorized or re-assigned
+ * when a product is added.
+ */
+export function serviceIdsForOS(osId: OSId): Set<string> {
+  const os = OS_REGISTRY[osId]
+  return new Set([...os.requiredIntegrations, ...os.optionalIntegrations])
+}
+
+/** True when a product can read anything from an account granting `services`. */
+export function osCanUseServices(osId: OSId, services: string[]): boolean {
+  const usable = serviceIdsForOS(osId)
+  return services.some((service) => usable.has(service))
+}
+
+/** Providers a product can authorize, derived from the services it declares. */
+export function providersForOS(osId: OSId): string[] {
+  const seen = new Set<string>()
+  serviceIdsForOS(osId).forEach((id) => seen.add(providerKeyFor(id)))
+  return [...seen]
+}

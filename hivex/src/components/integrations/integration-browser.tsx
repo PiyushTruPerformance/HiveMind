@@ -13,10 +13,11 @@ import { cn } from '@/lib/utils/cn'
 import { INTEGRATIONS, INTEGRATION_CATEGORY_META } from '@/platform/config/integrations'
 import { OS_LIST } from '@/platform/config/os-registry'
 import { formatLimit } from '@/platform/config/plans'
-import type { IntegrationCategory, IntegrationDefinition, OSId } from '@/platform/types'
+import type { IntegrationCategory, OSId } from '@/platform/types'
 
-import { ConnectDialog } from './connect-dialog'
+import { ConnectAccountDialog } from './connect-account-dialog'
 import { IntegrationCard } from './integration-card'
+import { isUnhealthy } from './status-pill'
 
 type StatusFilter = 'all' | 'connected' | 'available' | 'attention'
 
@@ -28,29 +29,32 @@ type StatusFilter = 'all' | 'connected' | 'available' | 'attention'
 export function IntegrationBrowser({
   focusId,
   compact,
+  /** Narrows the catalog to one product's scope; omitted = organization-wide. */
+  osId,
 }: {
   focusId?: string
   compact?: boolean
+  osId?: OSId
 }) {
-  const { connections, subscriptions } = usePlatform()
+  const { accounts, subscriptions, serviceStatus } = usePlatform()
   const access = useAccess()
 
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<IntegrationCategory | 'all'>('all')
   const [osFilter, setOsFilter] = useState<OSId | 'all'>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
-  const [active, setActive] = useState<IntegrationDefinition | null>(null)
+  const [connecting, setConnecting] = useState<{ provider: string; osId: OSId } | null>(null)
 
-  const connectionMap = useMemo(
-    () => Object.fromEntries(connections.map((c) => [c.integrationId, c])),
-    [connections],
-  )
-
-  const connectedCount = connections.filter((c) => c.status === 'connected').length
   /*
-   * Connections are organization-wide but plans are per product, so the cap is
-   * the most generous tier the organization holds anywhere — charging the
-   * strictest one would punish owning a Free product alongside a paid one.
+   * The cap counts *accounts*, not services: an agency running three Google
+   * logins is using three connections, even though one authorization each
+   * covers four services.
+   */
+  const connectedCount = accounts.filter((a) => a.status === 'connected').length
+  /*
+   * Plans are per product, so the cap is the most generous tier the
+   * organization holds anywhere — charging the strictest one would punish
+   * owning a Free product alongside a paid one.
    */
   const held = Object.values(subscriptions).filter(Boolean)
   const capOwner = held.reduce<OSId | null>((best, subscription) => {
@@ -70,19 +74,17 @@ export function IntegrationBrowser({
       if (category !== 'all' && integration.category !== category) return false
       if (osFilter !== 'all' && !integration.usedBy.includes(osFilter)) return false
 
-      const status = connectionMap[integration.id]?.status ?? 'not_connected'
+      const status = serviceStatus(integration.id, osId)
       if (statusFilter === 'connected' && status !== 'connected') return false
       if (statusFilter === 'available' && status === 'connected') return false
-      if (statusFilter === 'attention' && status !== 'error' && status !== 'reconnect_required') {
-        return false
-      }
+      if (statusFilter === 'attention' && !isUnhealthy(status)) return false
 
       if (!q) return true
       return `${integration.name} ${integration.description} ${integration.providerSlug} ${integration.category}`
         .toLowerCase()
         .includes(q)
     })
-  }, [query, category, osFilter, statusFilter, connectionMap])
+  }, [query, category, osFilter, statusFilter, serviceStatus, osId])
 
   const categories = useMemo(() => {
     const present = new Set(INTEGRATIONS.map((i) => i.category))
@@ -195,19 +197,20 @@ export function IntegrationBrowser({
             <IntegrationCard
               key={integration.id}
               integration={integration}
-              connection={connectionMap[integration.id]}
-              onConnect={setActive}
+              {...(osId ? { osId } : {})}
+              onConnect={(provider, targetOS) => setConnecting({ provider, osId: targetOS })}
               highlighted={focusId === integration.id}
             />
           ))}
         </div>
       )}
 
-      <ConnectDialog
-        integration={active}
-        open={Boolean(active)}
+      <ConnectAccountDialog
+        provider={connecting?.provider ?? null}
+        osId={connecting?.osId ?? 'reporting'}
+        open={Boolean(connecting)}
         onOpenChange={(open) => {
-          if (!open) setActive(null)
+          if (!open) setConnecting(null)
         }}
       />
     </div>

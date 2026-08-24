@@ -240,6 +240,13 @@ export interface Workspace {
   health: WorkspaceHealth
   healthScore: number
   memberCount: number
+  /**
+   * Integration ids feeding this client.
+   *
+   * Derived in the platform provider from resource mappings — never authored on
+   * a fixture, because the account that owns a resource is the single source of
+   * truth for what a client is connected to.
+   */
   connectedIntegrations: string[]
   createdAt: string
   updatedAt: string
@@ -275,8 +282,16 @@ export type IntegrationCategory =
 export type ConnectionStatus =
   | 'not_connected'
   | 'connecting'
+  | 'discovering'
   | 'connected'
+  /**
+   * Deliberately disconnected, but still remembered because clients depend on
+   * it. Keeping the row is what lets "reconnect and the data comes back" be
+   * true — a hard delete would take the client mappings with it.
+   */
+  | 'disconnected'
   | 'error'
+  | 'expired'
   | 'reconnect_required'
 
 export interface IntegrationDefinition {
@@ -302,22 +317,128 @@ export interface IntegrationDefinition {
   docsNote?: string
 }
 
-export interface IntegrationResource {
-  id: string
-  name: string
-  subtitle: string
-  kind: string
-}
+/* -------------------------------------------------------------------------- */
+/* Integration model: account -> resource -> mapping                           */
+/* -------------------------------------------------------------------------- */
 
-export interface IntegrationConnection {
-  integrationId: string
+/**
+ * Three levels, deliberately separate.
+ *
+ *   IntegrationAccount   WHO authorised — one Google login, one Slack workspace.
+ *                        A single Google account grants several *services*
+ *                        (GA4, Search Console, Ads, Business Profile), so an
+ *                        account is NOT the same thing as an integration.
+ *   IntegrationResource  WHAT that account exposes — a GA4 property, a verified
+ *                        site, an Ads customer, a Business Profile location.
+ *   IntegrationMapping   WHICH client consumes a resource.
+ *
+ * Collapsing any two of these is what made the previous model unable to express
+ * "one agency Google login serving twelve clients".
+ */
+
+/** Groups the integrations that a single authorization grants together. */
+export type IntegrationProviderKey = string
+
+/**
+ * Who owns a connection.
+ *
+ * `organization` connections belong to the account, not to a product. Signing
+ * into Google is something a person does once for the organization, so adding a
+ * second product must never ask for the same login again — Reporting OS and SEO
+ * OS both read Search Console from the one authorization.
+ *
+ * Which product can *use* an organization account is not stored here: it falls
+ * out of the services the account grants and the integrations each product
+ * declares, so a new product picks up the right accounts with no extra wiring.
+ *
+ * `client` connections belong to one client inside one product — used when a
+ * client insists on their own Google login rather than the agency's. Those stay
+ * narrow on purpose; a client's credentials are not an organization asset.
+ */
+export type ConnectionScope =
+  | { kind: 'organization' }
+  | { kind: 'client'; osId: OSId; workspaceId: string }
+
+export interface IntegrationAccount {
+  id: string
+  /** Provider family: 'google' for the Google pipeline, else the integration id. */
+  provider: IntegrationProviderKey
+  scope: ConnectionScope
+  /**
+   * The product the user was in when they authorized.
+   *
+   * Provenance only — it never limits who can use the account. It exists so the
+   * UI can say "added in Reporting OS" when the same login turns up in SEO OS,
+   * which is the difference between a reused account and a mystery one.
+   */
+  connectedIn: OSId
+  /** Human identity of the authorization — usually an email. */
+  label: string
+  /** Provider-side account identifier, kept for the real backend. */
+  externalAccountId: string
   status: ConnectionStatus
-  connectedAt?: string
-  connectedBy?: string
-  accountLabel?: string
-  selectedResources: IntegrationResource[]
+  /** Integration ids this one authorization grants. */
+  services: string[]
+  grantedScopes: string[]
+  connectedAt: string
+  connectedBy: string
   lastSyncAt?: string
   error?: string
+}
+
+export type ResourceKind = 'property' | 'site' | 'account' | 'location' | 'channel' | 'folder'
+
+export interface IntegrationResource {
+  id: string
+  accountId: string
+  /** Integration id this resource belongs to — ga4, gsc, google-ads, gbp… */
+  service: string
+  /** Provider-side id: GA4 property id, sc-domain URL, Ads customer id. */
+  externalId: string
+  name: string
+  subtitle: string
+  kind: ResourceKind
+  /** Goes unavailable when its account is disconnected or expires. */
+  available: boolean
+}
+
+export interface IntegrationMapping {
+  id: string
+  resourceId: string
+  osId: OSId
+  /** The client. Workspaces are clients in Reporting OS and HR OS. */
+  workspaceId: string
+  mappedAt: string
+  mappedBy: string
+}
+
+/** A resource joined to its account and mapping — what the UI actually renders. */
+export interface ResolvedResource {
+  resource: IntegrationResource
+  account: IntegrationAccount
+  mapping?: IntegrationMapping
+  /** Convenience: true when the account is client-scoped. */
+  clientSpecific: boolean
+}
+
+/** One client that depends on an account, and the product it lives in. */
+export interface AffectedClient {
+  osId: OSId
+  workspaceId: string
+}
+
+/**
+ * What disconnecting an account would break — shown before confirming.
+ *
+ * Clients are carried with their product because an organization account can be
+ * feeding clients in several products at once, and "4 clients affected" is
+ * misleading if three of them are somewhere the user is not looking.
+ */
+export interface DisconnectImpact {
+  resourceCount: number
+  mappedResourceCount: number
+  affected: AffectedClient[]
+  affectedOSIds: OSId[]
 }
 
 /* -------------------------------------------------------------------------- */

@@ -1,63 +1,54 @@
 'use client'
 
-import { AlertTriangle, Link2Off, Plug, RefreshCw, RotateCw } from 'lucide-react'
-import { useState } from 'react'
+import { AlertTriangle, Plug, Plus, RotateCw } from 'lucide-react'
 
 import { OSTile } from '@/components/common/os-tile'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tooltip } from '@/components/ui/misc'
-import { useToast } from '@/components/ui/toast'
 import { useAccess } from '@/lib/access/useAccess'
-import { integrationService } from '@/lib/mock/services/integrationService'
-import { DEMO_NOW_MS } from '@/lib/mock/seed'
 import { usePlatform } from '@/lib/state/platform-provider'
 import { cn } from '@/lib/utils/cn'
-import { formatRelative } from '@/lib/utils/format'
 import { OS_REGISTRY } from '@/platform/config/os-registry'
-import { PHASE_META } from '@/platform/config/integrations'
-import type { IntegrationConnection, IntegrationDefinition } from '@/platform/types'
+import { PHASE_META, providerKeyFor } from '@/platform/config/integrations'
+import type { IntegrationDefinition, OSId } from '@/platform/types'
 
 import { IntegrationIcon } from './integration-icon'
-import { StatusPill } from './status-pill'
+import { StatusPill, isUnhealthy } from './status-pill'
 
+/**
+ * One catalog entry.
+ *
+ * A card describes a *service*, so its status is the health of the accounts
+ * that grant it and its detail line is how many of those accounts exist —
+ * management of an individual login belongs on the owning product's
+ * Connected accounts list, not here.
+ */
 export function IntegrationCard({
   integration,
-  connection,
+  /** Narrows status and connect scope to one product; omitted = any product. */
+  osId,
   onConnect,
   highlighted,
 }: {
   integration: IntegrationDefinition
-  connection?: IntegrationConnection
-  onConnect: (integration: IntegrationDefinition) => void
+  osId?: OSId
+  onConnect: (provider: string, osId: OSId) => void
   highlighted?: boolean
 }) {
-  const toast = useToast()
   const access = useAccess()
-  const { removeConnection, upsertConnection } = usePlatform()
-  const [syncing, setSyncing] = useState(false)
+  const { serviceStatus, accountsForService } = usePlatform()
 
-  const status = connection?.status ?? 'not_connected'
+  const status = serviceStatus(integration.id, osId)
+  const accounts = accountsForService(integration.id, osId)
   const isConnected = status === 'connected'
-  const needsAttention = status === 'error' || status === 'reconnect_required'
+  const needsAttention = isUnhealthy(status)
   const canManage = access.can('integration:connect')
+  const broken = accounts.find((a) => a.error)
 
-  const sync = async () => {
-    setSyncing(true)
-    try {
-      const { syncedAt } = await integrationService.sync(integration.id)
-      if (connection) upsertConnection({ ...connection, lastSyncAt: syncedAt })
-      toast.success(`${integration.name} synced`)
-    } finally {
-      setSyncing(false)
-    }
-  }
-
-  const disconnect = async () => {
-    await integrationService.disconnect(integration.id)
-    removeConnection(integration.id)
-    toast.info(`${integration.name} disconnected`)
-  }
+  /* Connections belong to a product, so a card opened from the org-wide catalog
+     defaults to the integration's primary consumer. */
+  const targetOS = osId ?? integration.usedBy[0]
 
   return (
     <div
@@ -104,95 +95,63 @@ export function IntegrationCard({
         ) : null}
       </div>
 
-      {connection?.error ? (
+      {broken?.error ? (
         <p className="mt-2.5 flex items-start gap-1.5 text-2xs leading-relaxed text-warning">
           <AlertTriangle className="mt-0.5 size-3 shrink-0" aria-hidden />
-          {connection.error}
+          {broken.error}
         </p>
       ) : null}
 
-      {isConnected ? (
-        <dl className="mt-3 space-y-1 border-t pt-3 text-2xs">
-          <div className="flex justify-between gap-2">
-            <dt className="text-muted-foreground">Account</dt>
-            <dd className="truncate font-medium">{connection?.accountLabel}</dd>
-          </div>
-          {connection?.selectedResources.length ? (
-            <div className="flex justify-between gap-2">
-              <dt className="text-muted-foreground">Mapped</dt>
-              <dd className="font-medium tabular-nums">
-                {connection.selectedResources.length} resources
-              </dd>
-            </div>
+      {accounts.length > 0 ? (
+        <ul className="mt-3 space-y-1 border-t pt-3 text-2xs">
+          {accounts.slice(0, 3).map((account) => (
+            <li key={account.id} className="flex items-center justify-between gap-2">
+              <span className="truncate">{account.label}</span>
+              <span className="shrink-0 text-muted-foreground">
+                {account.scope.kind === 'client'
+                  ? `${OS_REGISTRY[account.scope.osId].shortName} · client`
+                  : `added in ${OS_REGISTRY[account.connectedIn].shortName}`}
+              </span>
+            </li>
+          ))}
+          {accounts.length > 3 ? (
+            <li className="text-muted-foreground">+{accounts.length - 3} more</li>
           ) : null}
-          {connection?.lastSyncAt ? (
-            <div className="flex justify-between gap-2">
-              <dt className="text-muted-foreground">Last sync</dt>
-              <dd className="font-medium">{formatRelative(connection.lastSyncAt, DEMO_NOW_MS)}</dd>
-            </div>
-          ) : null}
-        </dl>
+        </ul>
       ) : null}
 
       <div className="mt-auto flex items-center justify-between gap-2 border-t pt-3">
         <div className="flex items-center gap-1">
           <span className="text-2xs text-muted-foreground">Used by</span>
           <div className="flex -space-x-1">
-            {integration.usedBy.map((osId) => (
-              <Tooltip key={osId} content={OS_REGISTRY[osId].name}>
+            {integration.usedBy.map((id) => (
+              <Tooltip key={id} content={OS_REGISTRY[id].name}>
                 <span className="rounded-md ring-2 ring-card">
-                  <OSTile os={OS_REGISTRY[osId]} size="sm" />
+                  <OSTile os={OS_REGISTRY[id]} size="sm" />
                 </span>
               </Tooltip>
             ))}
           </div>
         </div>
 
-        <div className="flex items-center gap-1">
-          {isConnected ? (
-            <>
-              <Tooltip content="Sync now">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => void sync()}
-                  loading={syncing}
-                  aria-label={`Sync ${integration.name}`}
-                >
-                  {!syncing ? <RefreshCw /> : null}
-                </Button>
-              </Tooltip>
-              {access.can('integration:disconnect') ? (
-                <Tooltip content="Disconnect">
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => void disconnect()}
-                    aria-label={`Disconnect ${integration.name}`}
-                  >
-                    <Link2Off />
-                  </Button>
-                </Tooltip>
-              ) : null}
-            </>
-          ) : needsAttention ? (
-            <Button variant="outline" size="sm" onClick={() => onConnect(integration)} disabled={!canManage}>
+        {targetOS ? (
+          <Button
+            variant={isConnected ? 'ghost' : needsAttention ? 'outline' : 'outline'}
+            size="sm"
+            onClick={() => onConnect(providerKeyFor(integration.id), targetOS)}
+            loading={status === 'connecting'}
+            disabled={!canManage}
+          >
+            {status === 'connecting' ? null : isConnected ? (
+              <Plus className="size-3.5" />
+            ) : needsAttention ? (
               <RotateCw className="size-3.5" />
-              Reconnect
-            </Button>
-          ) : (
-            <Button
-              variant={status === 'connecting' ? 'subtle' : 'outline'}
-              size="sm"
-              onClick={() => onConnect(integration)}
-              loading={status === 'connecting'}
-              disabled={!canManage}
-            >
-              {status !== 'connecting' ? <Plug className="size-3.5" /> : null}
-              Connect
-            </Button>
-          )}
-        </div>
+            ) : (
+              <Plug className="size-3.5" />
+            )}
+            {isConnected ? 'Add account' : needsAttention ? 'Reconnect' : 'Connect'}
+          </Button>
+        ) : null}
       </div>
     </div>
   )

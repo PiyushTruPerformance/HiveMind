@@ -10,6 +10,16 @@ import { daysAgo, hoursAgo } from '../seed'
  * OS registry, the entity is the same.
  */
 
+/*
+ * `connectedIntegrations` is empty on every Reporting OS client on purpose.
+ *
+ * Which sources a client reads is a property of the resource mappings, not of
+ * the client record, so the platform provider derives it from the mapping table
+ * at read time. Authoring it here as well would give the same fact two homes
+ * and they would disagree the first time somebody re-mapped a property.
+ *
+ * Products not yet on the mapping model still declare theirs literally.
+ */
 const ws = (w: Omit<Workspace, 'organizationId'>): Workspace => ({
   ...w,
   organizationId: 'org_truperformance',
@@ -28,7 +38,7 @@ export const DEMO_WORKSPACES: Record<OSId, Workspace[]> = {
       health: 'healthy',
       healthScore: 92,
       memberCount: 7,
-      connectedIntegrations: ['ga4', 'gsc', 'google-ads', 'gbp', 'slack'],
+      connectedIntegrations: [],
       createdAt: daysAgo(388),
       updatedAt: hoursAgo(3),
       stats: [
@@ -48,7 +58,7 @@ export const DEMO_WORKSPACES: Record<OSId, Workspace[]> = {
       health: 'attention',
       healthScore: 74,
       memberCount: 5,
-      connectedIntegrations: ['ga4', 'gsc', 'gbp'],
+      connectedIntegrations: [],
       createdAt: daysAgo(295),
       updatedAt: hoursAgo(19),
       stats: [
@@ -68,7 +78,7 @@ export const DEMO_WORKSPACES: Record<OSId, Workspace[]> = {
       health: 'healthy',
       healthScore: 88,
       memberCount: 4,
-      connectedIntegrations: ['ga4', 'gsc'],
+      connectedIntegrations: [],
       createdAt: daysAgo(211),
       updatedAt: daysAgo(1),
       stats: [
@@ -88,13 +98,34 @@ export const DEMO_WORKSPACES: Record<OSId, Workspace[]> = {
       health: 'at_risk',
       healthScore: 58,
       memberCount: 3,
-      connectedIntegrations: ['ga4', 'google-ads'],
+      connectedIntegrations: [],
       createdAt: daysAgo(122),
       updatedAt: daysAgo(4),
       stats: [
         { label: 'Sessions (30d)', value: '22.7K', delta: -11.6 },
         { label: 'Cost per lead', value: '$186', delta: 24.3 },
         { label: 'Conversions', value: '118', delta: -14.1 },
+      ],
+    }),
+    /* Just signed, nothing mapped yet — the state the mapping table exists for. */
+    ws({
+      id: 'ws_harbor',
+      osId: 'reporting',
+      name: 'Harbor & Vine',
+      slug: 'harbor-and-vine',
+      monogram: 'HV',
+      accent: '31 88% 52%',
+      description: 'Hospitality group, four venues. Onboarding in progress.',
+      health: 'attention',
+      healthScore: 71,
+      memberCount: 2,
+      connectedIntegrations: [],
+      createdAt: daysAgo(9),
+      updatedAt: hoursAgo(20),
+      stats: [
+        { label: 'Sessions (30d)', value: '—', delta: 0 },
+        { label: 'Ad spend (30d)', value: '—', delta: 0 },
+        { label: 'Conversions', value: '—', delta: 0 },
       ],
     }),
   ],

@@ -58,7 +58,9 @@ export function clearAllPlatformStorage(): void {
 export const STORAGE_KEYS = {
   subscriptions: 'subscriptions',
   organization: 'organization',
-  connections: 'connections',
+  accounts: 'integration-accounts',
+  resources: 'integration-resources',
+  mappings: 'integration-mappings',
   recents: 'recents',
   favorites: 'favorites',
   conversations: 'conversations',

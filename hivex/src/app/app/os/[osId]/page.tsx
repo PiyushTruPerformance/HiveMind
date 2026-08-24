@@ -33,12 +33,12 @@ export default function OSOverviewPage() {
   const params = useParams<{ osId: OSId }>()
   const os = OS_REGISTRY[params.osId]
   const access = useAccess()
-  const { connectionFor } = usePlatform()
+  const { serviceStatus } = usePlatform()
 
   const workspaces = access.workspacesIn(os.id)
   const dataSources = [...os.requiredIntegrations, ...os.optionalIntegrations]
   const connectedSources = dataSources.filter(
-    (id) => connectionFor(id)?.status === 'connected',
+    (id) => serviceStatus(id, os.id) === 'connected',
   ).length
   const members = workspaces.reduce((acc, w) => acc + w.memberCount, 0)
   const avgHealth = workspaces.length
@@ -141,7 +141,6 @@ export default function OSOverviewPage() {
               {dataSources.slice(0, 6).map((id) => {
                 const integration = getIntegration(id)
                 if (!integration) return null
-                const connection = connectionFor(id)
                 const required = os.requiredIntegrations.includes(id)
                 return (
                   <div key={id} className="flex items-center gap-2.5">
@@ -154,7 +153,7 @@ export default function OSOverviewPage() {
                         </span>
                       ) : null}
                     </span>
-                    <StatusPill status={connection?.status ?? 'not_connected'} />
+                    <StatusPill status={serviceStatus(id, os.id)} />
                   </div>
                 )
               })}

@@ -136,9 +136,9 @@ export function OrganizationSettings() {
 
 export function PlanSettings() {
   const access = useAccess()
-  const { subscriptions, connections, members } = usePlatform()
+  const { subscriptions, accounts, members } = usePlatform()
 
-  const connected = connections.filter((c) => c.status === 'connected').length
+  const connected = accounts.filter((a) => a.status === 'connected').length
   const approved = members.filter((m) => m.status === 'approved').length
 
   const held = OS_LIST.filter((os) => subscriptions[os.id])

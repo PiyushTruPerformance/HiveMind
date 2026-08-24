@@ -13,6 +13,7 @@ import {
 import type { ReactNode } from 'react'
 
 import { OSTile } from '@/components/common/os-tile'
+import { isUnhealthy } from '@/components/integrations/status-pill'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -118,14 +119,12 @@ export function AdminConsole({ section }: { section: AdminSection }) {
 
 function OverviewView() {
   const access = useAccess()
-  const { members, workspaces, connections } = usePlatform()
+  const { members, workspaces, accounts } = usePlatform()
   const isSuperadmin = access.can('superadmin:console')
 
   const totalWorkspaces = Object.values(workspaces).flat().length
-  const connected = connections.filter((c) => c.status === 'connected').length
-  const attention = connections.filter(
-    (c) => c.status === 'error' || c.status === 'reconnect_required',
-  ).length
+  const connected = accounts.filter((a) => a.status === 'connected').length
+  const attention = accounts.filter((a) => isUnhealthy(a.status)).length
 
   return (
     <div className="space-y-5">

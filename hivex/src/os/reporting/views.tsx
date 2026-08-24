@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
+import { ClientDataSources } from '@/components/integrations/client-data-sources'
 import { IntegrationIcon } from '@/components/integrations/integration-icon'
 import { StatusPill } from '@/components/integrations/status-pill'
 import { MetricRow, Panel, PeriodSelector, formatMetric } from '@/components/os/os-kit'
@@ -70,7 +71,8 @@ export function CommandCentre({ workspace, os }: WorkspaceViewProps) {
   const channels = channelBreakdown(workspace.id, period)
   const currentSprint = sprints(workspace.id)[0]
   const reports = periodReports(workspace.id)
-  const { connectionFor } = usePlatform()
+  const { clientResources } = usePlatform()
+  const sources = clientResources(os.id, workspace.id)
 
   const completed = currentSprint.tasks.filter((t) => t.status === 'COMPLETED').length
   const blocked = currentSprint.tasks.filter((t) => t.status === 'BLOCKED').length
@@ -165,20 +167,27 @@ export function CommandCentre({ workspace, os }: WorkspaceViewProps) {
 
         <Panel title="Data freshness">
           <div className="space-y-2">
-            {workspace.connectedIntegrations.slice(0, 4).map((id) => {
-              const integration = getIntegration(id)
+            {sources.slice(0, 4).map((entry) => {
+              const integration = getIntegration(entry.resource.service)
               if (!integration) return null
-              const connection = connectionFor(id)
+              const healthy = entry.resource.available && entry.account.status === 'connected'
               return (
-                <div key={id} className="flex items-center gap-2">
+                <div key={entry.resource.id} className="flex items-center gap-2">
                   <IntegrationIcon integration={integration} size="sm" className="!size-6 !text-[9px]" />
-                  <span className="min-w-0 flex-1 truncate text-2xs">{integration.name}</span>
-                  {connection?.lastSyncAt ? (
+                  <span className="min-w-0 flex-1 truncate text-2xs">
+                    {entry.resource.name}
+                    {/* The source account, because two rows can name the same
+                        service and come from different logins. */}
+                    <span className="block truncate text-[10px] text-muted-foreground">
+                      {entry.account.label}
+                    </span>
+                  </span>
+                  {healthy && entry.account.lastSyncAt ? (
                     <span className="shrink-0 text-[10px] text-muted-foreground">
-                      {formatRelative(connection.lastSyncAt, DEMO_NOW_MS)}
+                      {formatRelative(entry.account.lastSyncAt, DEMO_NOW_MS)}
                     </span>
                   ) : (
-                    <StatusPill status={connection?.status ?? 'not_connected'} />
+                    <StatusPill status={entry.account.status} />
                   )}
                 </div>
               )
@@ -788,11 +797,12 @@ export function KanbanView({ workspace }: WorkspaceViewProps) {
 /* Workspace settings                                                          */
 /* -------------------------------------------------------------------------- */
 
-export function WorkspaceSettingsView({ workspace }: WorkspaceViewProps) {
+export function WorkspaceSettingsView({ workspace, os }: WorkspaceViewProps) {
   const toast = useToast()
   const access = useAccess()
-  const { connectionFor } = usePlatform()
+  const { clientResources } = usePlatform()
   const readOnly = !access.can('workspace:edit')
+  const sources = clientResources(os.id, workspace.id)
 
   return (
     <div className="space-y-5">
@@ -815,39 +825,48 @@ export function WorkspaceSettingsView({ workspace }: WorkspaceViewProps) {
         </div>
       </Panel>
 
+      {/* Mapping lives on its own page — it is a relationship between accounts
+          and clients, not a property of the workspace record. */}
       <Panel
-        title="Connector mapping"
-        description="Which property or account each data source reads for this workspace."
+        title="Data sources"
+        description="Which property or account each data source reads for this client."
       >
         <div className="space-y-3">
-          {workspace.connectedIntegrations.map((id) => {
-            const integration = getIntegration(id)
+          {sources.slice(0, 4).map((entry) => {
+            const integration = getIntegration(entry.resource.service)
             if (!integration) return null
-            const connection = connectionFor(id)
-            const resource = connection?.selectedResources[0]
             return (
               <div
-                key={id}
+                key={entry.resource.id}
                 className="flex flex-wrap items-center gap-3 rounded-md border px-3 py-2.5"
               >
                 <IntegrationIcon integration={integration} size="sm" />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13px] font-medium">{integration.name}</p>
+                  <p className="truncate text-[13px] font-medium">{entry.resource.name}</p>
                   <p className="truncate text-2xs text-muted-foreground">
-                    {resource ? `${resource.name} · ${resource.id}` : 'No resource mapped'}
+                    {integration.name} · from {entry.account.label}
+                    {entry.clientSpecific ? ' (client-owned)' : ''}
                   </p>
                 </div>
-                <StatusPill status={connection?.status ?? 'not_connected'} />
-                <Button variant="ghost" size="xs" disabled={readOnly}>
-                  <Settings2 className="size-3" />
-                  Change
-                </Button>
+                <StatusPill status={entry.account.status} />
               </div>
             )
           })}
-          {workspace.connectedIntegrations.length === 0 ? (
+          {sources.length === 0 ? (
             <EmptyState compact title="No data sources mapped" />
           ) : null}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3">
+            <p className="text-2xs text-muted-foreground">
+              {sources.length > 4 ? `${sources.length - 4} more not shown. ` : ''}
+              Add, change or remove a source on the Data sources page.
+            </p>
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/app/os/${os.id}/w/${workspace.slug}/integrations`}>
+                <Settings2 className="size-3" />
+                Manage data sources
+              </Link>
+            </Button>
+          </div>
         </div>
       </Panel>
 
@@ -860,6 +879,20 @@ export function WorkspaceSettingsView({ workspace }: WorkspaceViewProps) {
   )
 }
 
+/**
+ * A client's own data sources.
+ *
+ * Deliberately client-scoped: it shows only what feeds this client, names the
+ * account behind each row, and lets the client bring its own login. The global
+ * account list stays on the product's Integrations page, because disconnecting
+ * a shared login is not a client-level decision.
+ *
+ * Ask Tru is not mounted here — this is a client page.
+ */
+export function ClientIntegrationsView({ workspace, os }: WorkspaceViewProps) {
+  return <ClientDataSources osId={os.id} workspaceId={workspace.id} workspaceName={workspace.name} />
+}
+
 /** Re-exported so the section registry stays a plain lookup table. */
 export const reportingViews = {
   '': CommandCentre,
@@ -870,6 +903,7 @@ export const reportingViews = {
   decks: DecksView,
   audits: AuditsView,
   kanban: KanbanView,
+  integrations: ClientIntegrationsView,
   settings: WorkspaceSettingsView,
 }
 

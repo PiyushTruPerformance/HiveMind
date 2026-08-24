@@ -107,6 +107,14 @@ export const OS_REGISTRY: Record<OSId, OSProduct> = {
       },
       { id: 'kanban', label: 'Sprint board', icon: Kanban, group: 'Work' },
       {
+        id: 'integrations',
+        label: 'Data sources',
+        icon: Blocks,
+        group: 'Manage',
+        description: 'Which Google property or ad account feeds this client.',
+        minRole: 'team_lead',
+      },
+      {
         id: 'settings',
         label: 'Workspace settings',
         icon: Settings,

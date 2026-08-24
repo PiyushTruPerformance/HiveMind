@@ -1,137 +1,202 @@
-import type { IntegrationConnection, IntegrationResource } from '@/platform/types'
-import { resourcesFor } from '@/platform/config/integrations'
-import { daysAgo, hoursAgo, latency } from '../seed'
+import type {
+  AffectedClient,
+  ConnectionScope,
+  DisconnectImpact,
+  IntegrationAccount,
+  IntegrationMapping,
+  IntegrationResource,
+  OSId,
+} from '@/platform/types'
+import { GOOGLE_PROVIDER, providerName } from '@/platform/config/integrations'
+
+import {
+  DEMO_ACCOUNTS,
+  DEMO_MAPPINGS,
+  DEMO_RESOURCES,
+  DISCOVERY_ACCOUNT_LABELS,
+  DISCOVERY_TEMPLATES,
+} from '../data/integrations'
+import { latency } from '../seed'
 
 /**
  * Mock integration service.
  *
- * The two real pipelines it stands in for:
- *   - Google:  GET /auth/google/start -> /auth/google/callback ->
- *              GET /auth/google/discovery -> POST /auth/workspace/map
- *   - Nango:   POST /api/v1/nango/connect-session -> Connect UI ->
- *              POST /api/v1/nango/finalize-connection
+ * Stands in for two real pipelines, both of which have the same three-step
+ * shape — authorize an account, discover what it exposes, then map resources:
  *
- * The step sequence below (authorize -> discover -> select -> confirm) is the
- * same in both, which is why the UI can drive either with one component.
+ *   Google:  GET /auth/google/start -> /auth/google/callback ->
+ *            GET /auth/google/discovery -> POST /auth/workspace/map
+ *   Nango:   POST /api/v1/nango/connect-session -> Connect UI ->
+ *            POST /api/v1/nango/finalize-connection
+ *
+ * Every function returns the same domain types the real endpoints would, so
+ * swapping this file for `fetchWithAuth` calls changes no caller.
  */
 
-/** Connections a returning demo organization already has. */
-export const SEEDED_CONNECTIONS: IntegrationConnection[] = [
-  {
-    integrationId: 'ga4',
-    status: 'connected',
-    connectedAt: daysAgo(388),
-    connectedBy: 'Alex Mercer',
-    accountLabel: 'alex.mercer@truperformance.us',
-    selectedResources: resourcesFor('ga4').slice(0, 4),
-    lastSyncAt: hoursAgo(1),
-  },
-  {
-    integrationId: 'gsc',
-    status: 'connected',
-    connectedAt: daysAgo(388),
-    connectedBy: 'Alex Mercer',
-    accountLabel: 'alex.mercer@truperformance.us',
-    selectedResources: resourcesFor('gsc').slice(0, 4),
-    lastSyncAt: hoursAgo(1),
-  },
-  {
-    integrationId: 'google-ads',
-    status: 'connected',
-    connectedAt: daysAgo(360),
-    connectedBy: 'Priya Raghunathan',
-    accountLabel: 'ads@truperformance.us',
-    selectedResources: resourcesFor('google-ads').slice(0, 3),
-    lastSyncAt: hoursAgo(2),
-  },
-  {
-    integrationId: 'gbp',
-    status: 'reconnect_required',
-    connectedAt: daysAgo(210),
-    connectedBy: 'Priya Raghunathan',
-    accountLabel: 'ads@truperformance.us',
-    selectedResources: resourcesFor('gbp').slice(0, 2),
-    lastSyncAt: daysAgo(9),
-    error: 'The refresh token was revoked by the Google account owner.',
-  },
-  {
-    integrationId: 'slack',
-    status: 'error',
-    connectedAt: daysAgo(120),
-    connectedBy: 'Dmitri Volkov',
-    accountLabel: 'TruPerformance workspace',
-    selectedResources: resourcesFor('slack').slice(0, 2),
-    lastSyncAt: daysAgo(3),
-    error: 'invalid_auth — the Slack workspace token was rotated.',
-  },
-  {
-    integrationId: 'semrush',
-    status: 'connected',
-    connectedAt: daysAgo(64),
-    connectedBy: 'Nadia Okonkwo',
-    accountLabel: 'API key ••••7F2C',
-    selectedResources: [],
-    lastSyncAt: hoursAgo(14),
-  },
-]
+export const SEEDED_ACCOUNTS = DEMO_ACCOUNTS
+export const SEEDED_RESOURCES = DEMO_RESOURCES
+export const SEEDED_MAPPINGS = DEMO_MAPPINGS
 
-export type ConnectStep = 'authorize' | 'discover' | 'select' | 'confirm'
+let sequence = 0
+function nextId(prefix: string): string {
+  sequence += 1
+  return `${prefix}_${Date.now().toString(36)}${sequence}`
+}
 
 export const integrationService = {
-  async listConnections(): Promise<IntegrationConnection[]> {
+  /** GET /api/v1/integrations — every account in scope. */
+  async listAccounts(): Promise<IntegrationAccount[]> {
     await latency(200)
-    return SEEDED_CONNECTIONS
+    return DEMO_ACCOUNTS
   },
 
   /**
-   * Opens the provider's consent screen. In production this is a popup to the
-   * Google OAuth URL or the Nango Connect UI; here it is a timed simulation so
-   * the connecting state is real rather than instantaneous.
+   * Opens the provider's consent screen and returns the authorized identity.
+   *
+   * In production this is a popup to the Google OAuth URL or the Nango Connect
+   * UI. The delay is what makes the `connecting` state worth rendering.
    */
-  async authorize(integrationId: string): Promise<{ accountLabel: string }> {
-    await latency(1_100)
-    if (integrationId === 'wappalyzer') {
+  async authorizeAccount(
+    provider: string,
+    scope: ConnectionScope,
+    options: { label?: string; existingLabels?: string[]; connectedIn: OSId },
+  ): Promise<IntegrationAccount> {
+    await latency(1_200)
+
+    if (provider === 'wappalyzer') {
       throw new Error(
         'Provider slug could not be resolved. Confirm the Nango integration id on the dashboard before connecting.',
       )
     }
-    return { accountLabel: 'alex.mercer@truperformance.us' }
-  },
 
-  /** GET /auth/google/discovery, or the Nango proxy list-targets call. */
-  async discoverResources(integrationId: string): Promise<IntegrationResource[]> {
-    await latency(850)
-    return resourcesFor(integrationId)
-  },
+    const taken = new Set(options.existingLabels ?? [])
+    const label =
+      options.label ??
+      DISCOVERY_ACCOUNT_LABELS.find((candidate) => !taken.has(candidate)) ??
+      `account${taken.size + 1}@agency.com`
 
-  /** POST /auth/workspace/map or POST /api/v1/nango/finalize-connection */
-  async finalize(
-    integrationId: string,
-    selected: IntegrationResource[],
-    accountLabel: string,
-  ): Promise<IntegrationConnection> {
-    await latency(650)
     return {
-      integrationId,
+      id: nextId('acct'),
+      provider,
+      scope,
+      connectedIn: options.connectedIn,
+      label,
+      externalAccountId: nextId('ext').replace(/\D/g, '').padEnd(21, '0').slice(0, 21),
       status: 'connected',
+      services:
+        provider === GOOGLE_PROVIDER
+          ? ['ga4', 'gsc', 'google-ads', 'gbp']
+          : [provider],
+      grantedScopes:
+        provider === GOOGLE_PROVIDER
+          ? ['analytics.readonly', 'webmasters.readonly', 'adwords', 'business.manage']
+          : ['read'],
       connectedAt: new Date().toISOString(),
       connectedBy: 'Alex Mercer',
-      accountLabel,
-      selectedResources: selected,
       lastSyncAt: new Date().toISOString(),
     }
   },
 
-  /** POST /api/v1/nango/disconnect */
-  async disconnect(integrationId: string): Promise<void> {
-    await latency(420)
-    void integrationId
+  /**
+   * GET /auth/google/discovery, or the Nango proxy list-targets call.
+   *
+   * Discovery is what the provider says the account can see — the user never
+   * types a property id by hand.
+   */
+  async discoverResources(account: IntegrationAccount): Promise<IntegrationResource[]> {
+    await latency(900)
+    const template = DISCOVERY_TEMPLATES[account.provider] ?? []
+    return template.map((entry, index) => ({
+      ...entry,
+      id: `${account.id}_r${index}`,
+      accountId: account.id,
+    }))
   },
 
-  /** POST /api/v1/connectors/sync/{workspace_id} */
-  async sync(integrationId: string): Promise<{ syncedAt: string }> {
-    await latency(1_400)
-    void integrationId
+  /** POST /auth/workspace/map — associate a resource with a client. */
+  async mapResource(
+    resource: IntegrationResource,
+    osId: IntegrationMapping['osId'],
+    workspaceId: string,
+  ): Promise<IntegrationMapping> {
+    await latency(420)
+    return {
+      id: nextId('map'),
+      resourceId: resource.id,
+      osId,
+      workspaceId,
+      mappedAt: new Date().toISOString(),
+      mappedBy: 'Alex Mercer',
+    }
+  },
+
+  async unmapResource(mappingId: string): Promise<void> {
+    await latency(320)
+    void mappingId
+  },
+
+  /**
+   * What breaks if this account goes away.
+   *
+   * Computed before the confirmation dialog rather than after, because the
+   * whole point is that the user sees the blast radius while they can still
+   * cancel.
+   */
+  disconnectImpact(
+    accountId: string,
+    resources: IntegrationResource[],
+    mappings: IntegrationMapping[],
+  ): DisconnectImpact {
+    const owned = resources.filter((r) => r.accountId === accountId)
+    const ownedIds = new Set(owned.map((r) => r.id))
+    const impacted = mappings.filter((m) => ownedIds.has(m.resourceId))
+
+    /* Keyed by product *and* client: an organization account can be feeding
+       clients in more than one product, and the same workspace id could in
+       principle exist in two of them. */
+    const seen = new Map<string, AffectedClient>()
+    impacted.forEach((mapping) => {
+      seen.set(`${mapping.osId}:${mapping.workspaceId}`, {
+        osId: mapping.osId,
+        workspaceId: mapping.workspaceId,
+      })
+    })
+    const affected = [...seen.values()]
+
+    return {
+      resourceCount: owned.length,
+      mappedResourceCount: impacted.length,
+      affected,
+      affectedOSIds: [...new Set(affected.map((a) => a.osId))],
+    }
+  },
+
+  /** POST /api/v1/nango/disconnect, or Google token revocation. */
+  async disconnectAccount(accountId: string): Promise<void> {
+    await latency(520)
+    void accountId
+  },
+
+  /** POST /api/v1/connectors/sync/{id} */
+  async syncAccount(accountId: string): Promise<{ syncedAt: string }> {
+    await latency(1_300)
+    void accountId
     return { syncedAt: new Date().toISOString() }
+  },
+
+  /** Re-authorize an expired or revoked account, keeping its id and mappings. */
+  async reconnectAccount(account: IntegrationAccount): Promise<IntegrationAccount> {
+    await latency(1_100)
+    return {
+      ...account,
+      status: 'connected',
+      error: undefined,
+      connectedAt: new Date().toISOString(),
+      lastSyncAt: new Date().toISOString(),
+    }
+  },
+
+  describeProvider(provider: string): string {
+    return providerName(provider)
   },
 }

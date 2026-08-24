@@ -2,35 +2,46 @@
 
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
-import { Blocks, Settings2 } from 'lucide-react'
+import { Blocks, Plug, Settings2, Table2 } from 'lucide-react'
 
 import { OSTile } from '@/components/common/os-tile'
+import { ConnectedAccounts } from '@/components/integrations/connected-accounts'
 import { IntegrationBrowser } from '@/components/integrations/integration-browser'
 import {
   OSIntegrationChecklist,
   useOSIntegrationProgress,
 } from '@/components/integrations/os-integration-checklist'
+import { ResourceMappingTable } from '@/components/integrations/resource-mapping-table'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { PageBody, PageHeader, PageTransition, SectionHeading } from '@/components/ui/page'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/misc'
+import { usePlatform } from '@/lib/state/platform-provider'
 import { OS_REGISTRY } from '@/platform/config/os-registry'
 import type { OSId } from '@/platform/types'
 
 /**
  * A product's own Integrations page — permanent, not just a setup step.
  *
- * Two views of the same shared integration system:
- *   "This product" — the required/optional list from the OS registry, using the
- *                    same checklist the setup step runs on.
- *   "All"          — the full organization catalog, because a connection is
- *                    organization-wide and connecting Slack here should be the
- *                    same act as connecting it anywhere else.
+ * Split along the line the data model draws:
+ *
+ *   Accounts   — the logins. Several per provider is normal.
+ *   Resources  — what those logins expose, and which client consumes each one.
+ *   Catalog    — everything the platform can connect to.
+ *
+ * Keeping accounts and resources on separate tabs is the whole point: an
+ * account is authorized once and a resource is assigned per client, and merging
+ * the two is what stopped the previous design from expressing an agency.
  */
 export default function OSIntegrationsPage() {
   const params = useParams<{ osId: OSId }>()
   const os = OS_REGISTRY[params.osId]
   const progress = useOSIntegrationProgress(os.id)
+  const { accountsFor, resolvedResources } = usePlatform()
+
+  const accounts = accountsFor(os.id)
+  const resources = resolvedResources(os.id)
+  const unmapped = resources.filter((r) => !r.mapping && r.resource.available).length
 
   return (
     <PageTransition>
@@ -43,7 +54,7 @@ export default function OSIntegrationsPage() {
             </span>
           }
           title="Integrations"
-          description={`Connections are organization-wide — connect once and every product that uses the source picks it up. ${os.shortName} reads the ones below.`}
+          description={`Accounts are connected once for your organization and shared by every product — anything you signed into elsewhere is already here. Decide which property, site or ad account feeds which client below. One login can serve every client; a client can also bring its own.`}
           actions={
             progress.required.length > 0 ? (
               <Badge tone={progress.satisfied ? 'success' : 'warning'} dot>
@@ -72,25 +83,50 @@ export default function OSIntegrationsPage() {
           </div>
         ) : null}
 
-        <Tabs defaultValue="product">
+        <Tabs defaultValue="accounts">
           <TabsList>
-            <TabsTrigger value="product">
-              <Blocks className="size-3.5" />
-              Used by {os.shortName}
+            <TabsTrigger value="accounts">
+              <Plug className="size-3.5" />
+              Connected accounts
+              {accounts.length > 0 ? (
+                <span className="ml-1 tabular-nums text-muted-foreground">{accounts.length}</span>
+              ) : null}
             </TabsTrigger>
-            <TabsTrigger value="all">All integrations</TabsTrigger>
+            <TabsTrigger value="mapping">
+              <Table2 className="size-3.5" />
+              Resources &amp; mapping
+              {unmapped > 0 ? (
+                <span className="ml-1 tabular-nums text-warning">{unmapped}</span>
+              ) : null}
+            </TabsTrigger>
+            <TabsTrigger value="catalog">
+              <Blocks className="size-3.5" />
+              Catalog
+            </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="product" className="mt-4">
-            <OSIntegrationChecklist osId={os.id} variant="manage" />
+          <TabsContent value="accounts" className="mt-4 space-y-8">
+            <ConnectedAccounts osId={os.id} />
+
+            <div className="space-y-3">
+              <SectionHeading
+                title={`What ${os.shortName} needs`}
+                description="Required and optional services, and whether any account in your organization already grants them."
+              />
+              <OSIntegrationChecklist osId={os.id} variant="manage" />
+            </div>
           </TabsContent>
 
-          <TabsContent value="all" className="mt-4 space-y-3">
+          <TabsContent value="mapping" className="mt-4">
+            <ResourceMappingTable osId={os.id} />
+          </TabsContent>
+
+          <TabsContent value="catalog" className="mt-4 space-y-3">
             <SectionHeading
-              title="Organization catalog"
-              description="Everything the platform can connect to, across every product."
+              title="Everything connectable"
+              description="The full platform catalog. Connecting from here adds the account to your organization, so every product that uses the service picks it up."
             />
-            <IntegrationBrowser compact />
+            <IntegrationBrowser osId={os.id} compact />
           </TabsContent>
         </Tabs>
       </PageBody>

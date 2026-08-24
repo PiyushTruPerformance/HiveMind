@@ -8,7 +8,7 @@ import { ActivityFeed } from '@/components/home/activity-feed'
 import { ChooseOSPrompt } from '@/components/home/choose-os-prompt'
 import { OSLauncher } from '@/components/home/os-launcher'
 import { RecentWorkspaces } from '@/components/home/recent-workspaces'
-import { StatusPill } from '@/components/integrations/status-pill'
+import { StatusPill, isUnhealthy } from '@/components/integrations/status-pill'
 import { IntegrationIcon } from '@/components/integrations/integration-icon'
 import { OSTile } from '@/components/common/os-tile'
 import { Badge } from '@/components/ui/badge'
@@ -18,7 +18,7 @@ import { PageBody, PageHeader, PageTransition, SectionHeading } from '@/componen
 import { useAccess } from '@/lib/access/useAccess'
 import { useIdentity } from '@/lib/state/identity-provider'
 import { usePlatform } from '@/lib/state/platform-provider'
-import { getIntegration } from '@/platform/config/integrations'
+import { providerIconIntegration } from '@/platform/config/integrations'
 import { OS_REGISTRY } from '@/platform/config/os-registry'
 import { PLANS, formatLimit, priceFor } from '@/platform/config/plans'
 
@@ -31,15 +31,14 @@ import { PLANS, formatLimit, priceFor } from '@/platform/config/plans'
  */
 export default function PlatformHome() {
   const identity = useIdentity()
-  const { organization, connections, members, subscriptions } = usePlatform()
+  const { organization, accounts, members, subscriptions } = usePlatform()
   const access = useAccess()
 
-  const needsAttention = connections.filter(
-    (c) => c.status === 'error' || c.status === 'reconnect_required',
-  )
+  /* Attention is per *account* — one broken Google login, not one broken GA4. */
+  const needsAttention = accounts.filter((a) => isUnhealthy(a.status))
   const approvedMembers = members.filter((m) => m.status === 'approved').length
   const waitingMembers = members.filter((m) => m.status === 'waiting').length
-  const connectedCount = connections.filter((c) => c.status === 'connected').length
+  const connectedCount = accounts.filter((a) => a.status === 'connected').length
 
   const held = Object.values(subscriptions).filter(Boolean)
   const activeSubs = held.filter((s) => s!.status === 'active')
@@ -103,24 +102,20 @@ export default function PlatformHome() {
                     {needsAttention.length === 1 ? '' : 's'} need attention
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
-                    {needsAttention.map((connection) => {
-                      const integration = getIntegration(connection.integrationId)
-                      if (!integration) return null
-                      return (
-                        <span
-                          key={connection.integrationId}
-                          className="inline-flex items-center gap-1.5 rounded-full border bg-surface px-2 py-1 text-2xs"
-                        >
-                          <IntegrationIcon
-                            integration={integration}
-                            size="sm"
-                            className="!size-4 !text-[8px]"
-                          />
-                          {integration.name}
-                          <StatusPill status={connection.status} />
-                        </span>
-                      )
-                    })}
+                    {needsAttention.map((account) => (
+                      <span
+                        key={account.id}
+                        className="inline-flex items-center gap-1.5 rounded-full border bg-surface px-2 py-1 text-2xs"
+                      >
+                        <IntegrationIcon
+                          integration={providerIconIntegration(account.provider)}
+                          size="sm"
+                          className="!size-4 !text-[8px]"
+                        />
+                        {account.label}
+                        <StatusPill status={account.status} />
+                      </span>
+                    ))}
                   </div>
                 </div>
               </div>

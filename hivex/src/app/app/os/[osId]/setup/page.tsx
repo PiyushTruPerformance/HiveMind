@@ -2,11 +2,11 @@
 
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
-import { ArrowRight, Check, Sparkles } from 'lucide-react'
+import { ArrowRight, Check, Recycle, Sparkles } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useEffect, useState } from 'react'
 
-import { GoogleConnect } from '@/components/integrations/google-connect'
+import { ConnectedAccounts } from '@/components/integrations/connected-accounts'
 import {
   OSIntegrationChecklist,
   useOSIntegrationProgress,
@@ -29,21 +29,34 @@ import type { OSId } from '@/platform/types'
  * required list comes from the OS registry, and the button unlocks when it is
  * satisfied. Products whose required list is empty can finish immediately.
  *
- * Products that read Google data get the dedicated one-authorization flow —
- * the same <GoogleConnect> the old onboarding wizard used — because approving
- * four products separately is four times the friction for no benefit.
+ * Products that read Google data lead with the account list, because one
+ * authorization covers GA4, Search Console, Ads and Business Profile at once —
+ * approving four separately is four times the friction for no benefit. Which
+ * client each discovered property feeds is decided afterwards, on the product's
+ * Integrations page; setup only has to prove a source exists.
  */
 export default function OSSetupPage() {
   const params = useParams<{ osId: OSId }>()
   const router = useRouter()
   const toast = useToast()
   const access = useAccess()
-  const { completeSetup } = usePlatform()
+  const { completeSetup, accountsFor } = usePlatform()
 
   const os = OS_REGISTRY[params.osId]
   const subscription = access.subscriptionFor(os.id)
   const progress = useOSIntegrationProgress(os.id)
   const [finishing, setFinishing] = useState(false)
+
+  /*
+   * Logins the organization already has from another product.
+   *
+   * Setup is the moment this matters most: someone who has just bought a second
+   * product expects to be asked to sign in again, and the fastest way to earn
+   * the opposite reaction is to say so before they start clicking Connect.
+   */
+  const reused = accountsFor(os.id).filter(
+    (account) => account.scope.kind === 'organization' && account.connectedIn !== os.id,
+  )
 
   const usesGoogle = os.requiredIntegrations
     .concat(os.optionalIntegrations)
@@ -78,21 +91,38 @@ export default function OSSetupPage() {
       }
     >
       <div className="space-y-5">
+        {reused.length > 0 ? (
+          <div className="flex flex-col gap-3 rounded-xl border border-success/40 bg-success-soft/40 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2.5">
+              <Recycle className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
+              <div>
+                <p className="text-[13px] font-medium">
+                  {reused.length} {reused.length === 1 ? 'account is' : 'accounts are'} carried over
+                  from your other products
+                </p>
+                <p className="mt-0.5 text-2xs leading-relaxed text-muted-foreground">
+                  {reused.map((a) => a.label).join(', ')} — already authorized for your
+                  organization, so {os.shortName} can read {reused.length === 1 ? 'it' : 'them'}
+                  {progress.satisfied ? ' and setup is already satisfied.' : ' without a second sign-in.'}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {usesGoogle ? (
           <Card>
             <CardHeader>
               <CardTitle>Google data sources</CardTitle>
               <p className="mt-0.5 text-2xs text-muted-foreground">
-                One authorization covers every Google product {os.shortName} reads. You choose the
-                properties and accounts afterwards.
+                One authorization covers every Google product {os.shortName} reads, and it belongs
+                to your organization rather than to this product — so anything you connected
+                elsewhere is already listed. Connect as many accounts as you have; you assign their
+                properties to clients afterwards.
               </p>
             </CardHeader>
             <CardContent>
-              <GoogleConnect
-                onComplete={(count) =>
-                  toast.success('Google connected', `${count} resources mapped.`)
-                }
-              />
+              <ConnectedAccounts osId={os.id} compact />
             </CardContent>
           </Card>
         ) : null}
