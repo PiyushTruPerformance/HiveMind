@@ -3,28 +3,39 @@
 import { AnimatePresence, motion } from 'motion/react'
 import {
   ArrowUp,
+  Check,
+  CheckCircle2,
   Database,
   History,
   Info,
   Layers,
   MessageSquarePlus,
+  Mic,
+  Pencil,
+  Send,
   ShieldAlert,
   Sparkles,
   Square,
+  Trash2,
+  X,
+  XCircle,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { Avatar, Separator, Tooltip } from '@/components/ui/misc'
+import { Avatar, Separator, Skeleton, Tooltip } from '@/components/ui/misc'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { useConfirm } from '@/components/ui/confirm'
 import { ErrorState } from '@/components/ui/data'
+import { useToast } from '@/components/ui/toast'
 import { ASK_TRU_NAME } from '@/platform/config/ask-tru'
+import { useSpeechRecognition } from '@/lib/hooks/use-speech-recognition'
 import { useAssistant } from '@/lib/state/assistant-provider'
 import { useIdentity } from '@/lib/state/identity-provider'
 import { cn } from '@/lib/utils/cn'
 import { DEMO_NOW_MS } from '@/lib/mock/seed'
 import { formatRelative } from '@/lib/utils/format'
-import type { AssistantMessage } from '@/platform/types'
+import type { AssistantAction, AssistantMessage } from '@/platform/types'
 
 import { RichText } from './rich-text'
 
@@ -50,7 +61,19 @@ export function AssistantPanel({
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
+  const toast = useToast()
+
   const messages = assistant.activeConversation?.messages ?? []
+
+  /* Voice fills the composer rather than sending on its own, so a misheard
+     command can be corrected before it reaches a connector. */
+  const voice = useSpeechRecognition({
+    onFinalTranscript: (chunk) => {
+      const spoken = normaliseSpokenCommands(chunk)
+      setDraft((prev) => (prev.trim() ? `${prev.trimEnd()} ${spoken}` : spoken))
+    },
+    onError: (message) => toast.error('Voice input', message),
+  })
 
   useEffect(() => {
     const el = scrollRef.current
@@ -60,8 +83,12 @@ export function AssistantPanel({
   const submit = async () => {
     const value = draft.trim()
     if (!value || assistant.isStreaming) return
+    // Drop any speech still in flight so it cannot leak into the next draft.
+    if (voice.isListening) voice.abort()
     setDraft('')
-    await assistant.send(value)
+    const accepted = await assistant.send(value)
+    // Keep what the user wrote when the message did not go through.
+    if (!accepted) setDraft((current) => current || value)
     inputRef.current?.focus()
   }
 
@@ -85,13 +112,19 @@ export function AssistantPanel({
               transition={{ duration: 0.16 }}
               className="scrollbar-thin w-56 shrink-0 overflow-y-auto border-r bg-surface-sunken/60 p-2"
             >
-              <ConversationList onPick={() => setShowHistory(false)} />
+              <ConversationList manage onPick={() => setShowHistory(false)} />
             </motion.aside>
           ) : null}
         </AnimatePresence>
 
         <div ref={scrollRef} className="scrollbar-thin min-w-0 flex-1 overflow-y-auto">
-          {messages.length === 0 ? (
+          {messages.length === 0 && assistant.isLoadingHistory ? (
+            <div className="space-y-3 px-4 py-5" role="status" aria-label="Loading conversation">
+              <Skeleton className="ml-auto h-9 w-2/3" />
+              <Skeleton className="h-16 w-5/6" />
+              <Skeleton className="ml-auto h-9 w-1/2" />
+            </div>
+          ) : messages.length === 0 ? (
             <EmptyThread onPick={(prompt) => void assistant.send(prompt)} />
           ) : (
             <div
@@ -123,6 +156,13 @@ export function AssistantPanel({
             />
           ) : null}
 
+          {assistant.setupError ? (
+            <div className="mb-2 flex items-start gap-2 rounded-md border border-warning/30 bg-warning-soft/60 px-2.5 py-2">
+              <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
+              <p className="text-2xs leading-relaxed text-foreground/80">{assistant.setupError}</p>
+            </div>
+          ) : null}
+
           <div className="relative rounded-xl border bg-background shadow-xs transition-colors focus-within:border-border-strong">
             <textarea
               ref={inputRef}
@@ -135,11 +175,31 @@ export function AssistantPanel({
                 }
               }}
               rows={variant === 'page' ? 2 : 1}
-              placeholder={placeholderFor(assistant.context.label)}
+              placeholder={
+                voice.isListening
+                  ? voice.interimTranscript || 'Listening… start speaking'
+                  : placeholderFor(assistant.context.label)
+              }
               aria-label="Message Ask Tru"
-              className="scrollbar-thin max-h-40 w-full resize-none bg-transparent px-3.5 py-3 pr-12 text-[13.5px] outline-none placeholder:text-muted-foreground/70"
+              className={cn(
+                'scrollbar-thin max-h-40 w-full resize-none bg-transparent px-3.5 py-3 text-[13.5px] outline-none placeholder:text-muted-foreground/70',
+                voice.isSupported ? 'pr-[5.25rem]' : 'pr-12',
+              )}
             />
-            <div className="absolute bottom-2 right-2">
+            <div className="absolute bottom-2 right-2 flex items-center gap-1">
+              {voice.isSupported ? (
+                <Tooltip content={voice.isListening ? 'Stop voice input' : 'Speak your message'}>
+                  <Button
+                    size="icon-sm"
+                    variant={voice.isListening ? 'subtle' : 'ghost'}
+                    onClick={voice.isListening ? voice.stop : voice.start}
+                    aria-label={voice.isListening ? 'Stop voice input' : 'Start voice input'}
+                    aria-pressed={voice.isListening}
+                  >
+                    <Mic className={cn(voice.isListening && 'animate-pulse text-primary')} />
+                  </Button>
+                </Tooltip>
+              ) : null}
               <Button
                 size="icon-sm"
                 variant={draft.trim() ? 'primary' : 'ghost'}
@@ -159,6 +219,14 @@ export function AssistantPanel({
       </div>
     </div>
   )
+}
+
+/**
+ * Spoken connector commands arrive as words ("slash slack general"); the
+ * service parses the typed form ("/slack general").
+ */
+function normaliseSpokenCommands(text: string): string {
+  return text.replace(/\bslash\s+(?=[a-z])/gi, '/')
 }
 
 function placeholderFor(label: string): string {
@@ -322,8 +390,21 @@ function SuggestionRow({
   )
 }
 
-function ConversationList({ limit, onPick }: { limit?: number; onPick?: () => void }) {
+function ConversationList({
+  limit,
+  onPick,
+  manage,
+}: {
+  limit?: number
+  onPick?: () => void
+  /** Offer rename and delete on each row. */
+  manage?: boolean
+}) {
   const assistant = useAssistant()
+  const confirm = useConfirm()
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editTitle, setEditTitle] = useState('')
+
   const items = useMemo(() => {
     const list = assistant.conversations
     return limit ? list.slice(0, limit) : list
@@ -333,28 +414,99 @@ function ConversationList({ limit, onPick }: { limit?: number; onPick?: () => vo
     return <p className="px-2 py-6 text-center text-2xs text-muted-foreground">No conversations yet.</p>
   }
 
+  const commitRename = (id: string) => {
+    const title = editTitle.trim()
+    setEditingId(null)
+    if (title) void assistant.renameConversation(id, title)
+  }
+
+  const remove = async (id: string, title: string) => {
+    const ok = await confirm({
+      title: 'Delete this conversation?',
+      description: `"${title}" and its messages will be removed permanently.`,
+      confirmLabel: 'Delete',
+      tone: 'destructive',
+    })
+    if (ok) await assistant.deleteConversation(id)
+  }
+
+  const now = assistant.mode === 'live' ? Date.now() : DEMO_NOW_MS
+
   return (
     <ul className="space-y-0.5">
-      {items.map((conversation) => (
-        <li key={conversation.id}>
-          <button
-            type="button"
-            onClick={() => {
-              assistant.selectConversation(conversation.id)
-              onPick?.()
-            }}
-            className={cn(
-              'w-full rounded-md px-2.5 py-2 text-left transition-colors',
-              conversation.id === assistant.activeId ? 'bg-muted' : 'hover:bg-muted/60',
-            )}
-          >
-            <span className="block truncate text-2xs font-medium">{conversation.title}</span>
-            <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-              {conversation.context.label} · {formatRelative(conversation.updatedAt, DEMO_NOW_MS)}
-            </span>
-          </button>
-        </li>
-      ))}
+      {items.map((conversation) => {
+        const active = conversation.id === assistant.activeId
+
+        if (editingId === conversation.id) {
+          return (
+            <li key={conversation.id} className="flex items-center gap-1 rounded-md bg-muted px-1.5 py-1.5">
+              <input
+                autoFocus
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename(conversation.id)
+                  if (e.key === 'Escape') setEditingId(null)
+                }}
+                aria-label="Conversation name"
+                className="min-w-0 flex-1 rounded-sm border bg-background px-1.5 py-1 text-2xs outline-none focus:border-border-strong"
+              />
+              <Button size="icon-sm" variant="ghost" onClick={() => commitRename(conversation.id)} aria-label="Save name">
+                <Check />
+              </Button>
+              <Button size="icon-sm" variant="ghost" onClick={() => setEditingId(null)} aria-label="Cancel rename">
+                <X />
+              </Button>
+            </li>
+          )
+        }
+
+        return (
+          <li key={conversation.id} className="group relative">
+            <button
+              type="button"
+              onClick={() => {
+                assistant.selectConversation(conversation.id)
+                onPick?.()
+              }}
+              className={cn(
+                'w-full rounded-md px-2.5 py-2 text-left transition-colors',
+                manage && 'pr-14',
+                active ? 'bg-muted' : 'hover:bg-muted/60',
+              )}
+            >
+              <span className="block truncate text-2xs font-medium">{conversation.title}</span>
+              <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                {conversation.context.label} · {formatRelative(conversation.updatedAt, now)}
+              </span>
+            </button>
+
+            {manage ? (
+              <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingId(conversation.id)
+                    setEditTitle(conversation.title)
+                  }}
+                  className="rounded-sm p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+                  aria-label={`Rename ${conversation.title}`}
+                >
+                  <Pencil className="size-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void remove(conversation.id, conversation.title)}
+                  className="rounded-sm p-1 text-muted-foreground hover:bg-background hover:text-destructive"
+                  aria-label={`Delete ${conversation.title}`}
+                >
+                  <Trash2 className="size-3" />
+                </button>
+              </div>
+            ) : null}
+          </li>
+        )
+      })}
     </ul>
   )
 }
@@ -391,11 +543,14 @@ function MessageBubble({
           <ErrorState title="Assistant error" description={message.error} />
         ) : (
           <>
-            {message.content ? (
+            {/* A pending action shows its draft in the card, where it can be edited. */}
+            {message.content && !isActionable(message.action) ? (
               <RichText content={message.content} />
-            ) : (
+            ) : !message.action ? (
               <ThinkingDots />
-            )}
+            ) : null}
+
+            {message.action ? <ActionCard action={message.action} /> : null}
             {message.streaming && message.content ? (
               <span className="inline-block h-3.5 w-[2px] animate-caret-blink bg-foreground align-middle" />
             ) : null}
@@ -421,6 +576,90 @@ function MessageBubble({
             ) : null}
           </>
         )}
+      </div>
+    </div>
+  )
+}
+
+function isActionable(action: AssistantAction | undefined): boolean {
+  return action?.status === 'proposed' || action?.status === 'failed'
+}
+
+/**
+ * Confirm-before-send gate for a connector action (Slack message, Outlook
+ * email…). Nothing is delivered until "Confirm & send" is pressed; a failed
+ * send stays editable so it can be retried.
+ */
+function ActionCard({ action }: { action: AssistantAction }) {
+  const assistant = useAssistant()
+  const [discarded, setDiscarded] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [content, setContent] = useState(action.content)
+
+  useEffect(() => setContent(action.content), [action.content])
+
+  if (action.status === 'sent') {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full border border-success/30 bg-success-soft/60 px-2.5 py-1 text-2xs font-medium text-success">
+        <CheckCircle2 className="size-3.5" aria-hidden />
+        Action sent
+      </span>
+    )
+  }
+
+  if (discarded || !isActionable(action)) return null
+
+  const failed = action.status === 'failed'
+  const confirming = assistant.confirmingActionId === action.id
+  const edited = content.trim() !== action.content.trim()
+
+  return (
+    <div className="overflow-hidden rounded-lg border bg-surface">
+      <div
+        className={cn(
+          'flex items-center gap-1.5 border-b px-3 py-2 text-2xs font-semibold uppercase tracking-wider',
+          failed ? 'bg-destructive/5 text-destructive' : 'bg-surface-sunken/60 text-muted-foreground',
+        )}
+      >
+        {failed ? <XCircle className="size-3.5" aria-hidden /> : <Send className="size-3.5" aria-hidden />}
+        {failed ? 'Send failed — edit or retry' : 'Pending action'}
+      </div>
+
+      <div className="space-y-2.5 p-3">
+        {editing ? (
+          <textarea
+            autoFocus
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            rows={Math.min(10, Math.max(3, content.split('\n').length))}
+            aria-label="Edit action content"
+            className="scrollbar-thin w-full resize-y rounded-md border bg-background px-2.5 py-2 text-[13px] leading-relaxed outline-none focus:border-border-strong"
+          />
+        ) : (
+          <div className="whitespace-pre-wrap rounded-md bg-surface-sunken/60 px-2.5 py-2 text-[13px] leading-relaxed">
+            {content || <span className="italic text-muted-foreground">Empty message</span>}
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-1.5">
+          <Button
+            size="xs"
+            variant="primary"
+            loading={confirming}
+            disabled={confirming || !content.trim()}
+            onClick={() => void assistant.confirmAction(action.id, edited ? content : undefined)}
+          >
+            {!confirming ? <Send className="size-3" aria-hidden /> : null}
+            {confirming ? 'Sending…' : failed ? 'Retry send' : 'Confirm & send'}
+          </Button>
+          <Button size="xs" variant="outline" disabled={confirming} onClick={() => setEditing((e) => !e)}>
+            <Pencil className="size-3" aria-hidden />
+            {editing ? 'Done' : 'Edit'}
+          </Button>
+          <Button size="xs" variant="ghost" disabled={confirming} onClick={() => setDiscarded(true)}>
+            Discard
+          </Button>
+        </div>
       </div>
     </div>
   )

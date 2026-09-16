@@ -16,6 +16,9 @@ import { OS_REGISTRY, isOSId } from '@/platform/config/os-registry'
 import { ASK_TRU_PLATFORM_SUGGESTIONS, isAskTruAvailable } from '@/platform/config/ask-tru'
 import type { AssistantContext, AssistantMessage, Conversation, OSId, Workspace } from '@/platform/types'
 import { useAccess } from '@/lib/access/useAccess'
+import { isAiApiConfigured, isApiConfigured } from '@/lib/api/config'
+import { useLiveAssistant } from '@/lib/assistant/use-live-assistant'
+import { useIdentity } from '@/lib/state/identity-provider'
 import { usePlatform } from '@/lib/state/platform-provider'
 import { DEMO_CONVERSATIONS } from '@/lib/mock/data/conversations'
 import { assistantService, type AssistantScope } from '@/lib/mock/services/assistantService'
@@ -33,6 +36,11 @@ import { STORAGE_KEYS, readStorage, writeStorage } from '@/lib/utils/storage'
  *  2. **Scope is passed, not inferred.** Every request carries the caller's
  *     accessible OS list and workspace ids. The mock service honours it today;
  *     the production backend will enforce it. The contract does not change.
+ *
+ * Two engines sit behind one contract. With Clerk authentication,
+ * NEXT_PUBLIC_BASE_URL and NEXT_PUBLIC_AI_BACKEND_URL configured, conversations live in the Tru Reporting
+ * AI service (see lib/assistant/use-live-assistant). Without them — the demo —
+ * the local mock service answers, exactly as before.
  */
 
 interface AssistantValue {
@@ -48,7 +56,18 @@ interface AssistantValue {
   startNewConversation: () => void
 
   isStreaming: boolean
-  send: (prompt: string) => Promise<void>
+  /** Resolves false when the message was not accepted, so the composer can keep the draft. */
+  send: (prompt: string) => Promise<boolean>
+  renameConversation: (id: string, title: string) => Promise<void>
+  deleteConversation: (id: string) => Promise<void>
+
+  /** 'live' talks to the AI service; 'demo' answers from the local mock. */
+  mode: 'live' | 'demo'
+  /** Why the live assistant cannot be used right now, if it cannot. */
+  setupError: string | null
+  isLoadingHistory: boolean
+  confirmAction: (actionId: string, editedContent?: string) => Promise<boolean>
+  confirmingActionId: string | null
   suggestions: string[]
   /** False on client-specific pages, where Ask Tru is not offered at all. */
   available: boolean
@@ -112,7 +131,11 @@ const nextId = (prefix: string) => {
 export function AssistantProvider({ children }: { children: ReactNode }) {
   const pathname = usePathname() ?? '/'
   const access = useAccess()
+  const identity = useIdentity()
   const { workspaces } = usePlatform()
+
+  const mode: 'live' | 'demo' = isApiConfigured && isAiApiConfigured && identity.mode === 'clerk' ? 'live' : 'demo'
+  const live = useLiveAssistant(mode === 'live')
 
   const [open, setOpen] = useState(false)
   const [conversations, setConversations] = useState<Conversation[]>(DEMO_CONVERSATIONS)
@@ -143,7 +166,8 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   )
 
   /* Changing scope closes the open thread: an answer from another scope must
-     not appear to belong to the one you are now looking at. */
+     not appear to belong to the one you are now looking at. Live sessions are
+     not scope-bound on the service, so they stay open across navigation. */
   useEffect(() => {
     setActiveId(null)
   }, [context.label])
@@ -185,9 +209,9 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   const startNewConversation = useCallback(() => setActiveId(null), [])
 
   const send = useCallback(
-    async (prompt: string) => {
+    async (prompt: string): Promise<boolean> => {
       const trimmed = prompt.trim()
-      if (!trimmed || isStreaming) return
+      if (!trimmed || isStreaming) return false
 
       const now = new Date().toISOString()
       const userMessage: AssistantMessage = {
@@ -283,17 +307,89 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
           return prev
         })
       }
+      return true
     },
     [activeId, context, isStreaming, scope],
   )
 
-  const value = useMemo<AssistantValue>(
-    () => ({
+  const renameDemoConversation = useCallback(async (id: string, title: string) => {
+    const next = title.trim()
+    if (!next) return
+    setConversations((prev) => {
+      const updated = prev.map((c) => (c.id === id ? { ...c, title: next } : c))
+      writeStorage(STORAGE_KEYS.conversations, updated.slice(0, 20))
+      return updated
+    })
+  }, [])
+
+  const deleteDemoConversation = useCallback(async (id: string) => {
+    setConversations((prev) => {
+      const updated = prev.filter((c) => c.id !== id)
+      writeStorage(STORAGE_KEYS.conversations, updated.slice(0, 20))
+      return updated
+    })
+    setActiveId((current) => (current === id ? null : current))
+  }, [])
+
+  /* Live sessions, shaped as platform conversations. The service does not
+     record a scope per session, so each is shown against the current one. */
+  const liveConversations = useMemo<Conversation[]>(
+    () =>
+      live.sessions.map((session) => ({
+        id: session.id,
+        title: session.session_name?.trim() || 'New conversation',
+        context,
+        messages: [],
+        createdAt: session.created_at,
+        updatedAt: session.created_at,
+      })),
+    [live.sessions, context],
+  )
+
+  const liveActiveConversation = useMemo<Conversation | null>(() => {
+    const activeSessionId = live.activeSessionId
+    if (!activeSessionId) return null
+    const base = liveConversations.find((c) => c.id.toLowerCase() === activeSessionId.toLowerCase())
+    const now = new Date().toISOString()
+    return {
+      ...(base ?? { id: activeSessionId, title: 'New conversation', context, createdAt: now, updatedAt: now }),
+      messages: live.messages,
+    }
+  }, [live.activeSessionId, live.messages, liveConversations, context])
+
+  const value = useMemo<AssistantValue>(() => {
+    const shared = {
       open: open && available,
       setOpen: (next: boolean) => setOpen(next && available),
       toggle: () => setOpen((o) => !o && available),
       available,
       context,
+      suggestions,
+      mode,
+    }
+
+    if (mode === 'live') {
+      return {
+        ...shared,
+        conversations: liveConversations,
+        activeConversation: liveActiveConversation,
+        activeId: live.activeSessionId,
+        selectConversation: live.selectSession,
+        startNewConversation: () => live.selectSession(null),
+        isStreaming: live.isStreaming,
+        send: live.send,
+        renameConversation: live.rename,
+        deleteConversation: live.remove,
+        scopedConversations: liveConversations,
+        setupError: live.setupError,
+        isLoadingHistory: live.isLoadingHistory,
+        confirmAction: live.confirmAction,
+        confirmingActionId: live.confirmingActionId,
+      }
+    }
+
+    return {
+      ...shared,
       conversations,
       activeConversation,
       activeId,
@@ -301,23 +397,34 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
       startNewConversation,
       isStreaming,
       send,
-      suggestions,
+      renameConversation: renameDemoConversation,
+      deleteConversation: deleteDemoConversation,
       scopedConversations,
-    }),
-    [
-      open,
-      available,
-      context,
-      conversations,
-      activeConversation,
-      activeId,
-      startNewConversation,
-      isStreaming,
-      send,
-      suggestions,
-      scopedConversations,
-    ],
-  )
+      setupError: null,
+      isLoadingHistory: false,
+      // The demo never proposes connector actions.
+      confirmAction: async () => false,
+      confirmingActionId: null,
+    }
+  }, [
+    open,
+    available,
+    context,
+    suggestions,
+    mode,
+    live,
+    liveConversations,
+    liveActiveConversation,
+    conversations,
+    activeConversation,
+    activeId,
+    startNewConversation,
+    isStreaming,
+    send,
+    renameDemoConversation,
+    deleteDemoConversation,
+    scopedConversations,
+  ])
 
   return <AssistantCtx.Provider value={value}>{children}</AssistantCtx.Provider>
 }

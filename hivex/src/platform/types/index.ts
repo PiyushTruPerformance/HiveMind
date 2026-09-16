@@ -464,6 +464,19 @@ export interface AssistantCitation {
   detail: string
 }
 
+export type AssistantActionStatus = 'proposed' | 'sent' | 'failed' | 'empty'
+
+/**
+ * A connector action (Slack message, Outlook email…) the assistant proposed.
+ * Nothing is delivered until the user confirms it.
+ */
+export interface AssistantAction {
+  id: string
+  status: AssistantActionStatus
+  /** The drafted content; editable before sending. */
+  content: string
+}
+
 export interface AssistantMessage {
   id: string
   role: MessageRole
@@ -475,6 +488,8 @@ export interface AssistantMessage {
   /** Set when the answer was trimmed because of the caller's permissions. */
   permissionNotice?: string
   error?: string
+  /** Present when this reply proposes a connector action awaiting confirmation. */
+  action?: AssistantAction
 }
 
 export interface Conversation {

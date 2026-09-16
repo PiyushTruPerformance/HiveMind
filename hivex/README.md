@@ -34,6 +34,11 @@ authentication, copy `.env.local.example` to `.env.local` and set
 `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY`. The same file sets
 `NEXT_PUBLIC_HR_API_URL` if the HR OS service is not on port 8000.
 
+**Ask Tru** runs against the live Tru Reporting services once Clerk is on and
+`NEXT_PUBLIC_BASE_URL` (core API, `…/api/v1` — resolves the signed-in user via
+`/users/me`) and `NEXT_PUBLIC_AI_BACKEND_URL` (AI service, `…/api/ai/v1`) are
+set — the same variables the Tru Reporting client uses.
+
 Other scripts:
 
 ```bash
@@ -153,7 +158,7 @@ all pick it up automatically.
 | Authentication | Clerk when keys are present, local demo identity otherwise |
 | Organization, members, Reporting/SEO workspaces | `lib/mock/services/platformService.ts` |
 | Integrations, OAuth, discovery, sync | `lib/mock/services/integrationService.ts` |
-| AI assistant responses | `lib/mock/services/assistantService.ts` (local, streamed) |
+| AI assistant responses | **Live** when Clerk + `NEXT_PUBLIC_BASE_URL` + `NEXT_PUBLIC_AI_BACKEND_URL` are set — the Tru Reporting AI service via `lib/assistant/`; otherwise `lib/mock/services/assistantService.ts` (local, streamed) |
 | Reporting and SEO data | Deterministic fixtures in `lib/mock/data/` |
 | Billing | Not implemented — plan changes update entitlements only |
 | RBAC enforcement | Frontend only; the policy module is the seam for the real service |

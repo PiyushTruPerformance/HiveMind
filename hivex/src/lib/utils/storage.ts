@@ -64,6 +64,7 @@ export const STORAGE_KEYS = {
   recents: 'recents',
   favorites: 'favorites',
   conversations: 'conversations',
+  askTruSession: 'ask-tru-session',
   theme: 'theme',
   identity: 'identity',
   railCollapsed: 'rail-collapsed',

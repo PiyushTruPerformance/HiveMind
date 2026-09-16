@@ -13,6 +13,7 @@ import {
 
 import { osCanUseServices, serviceIdsForOS } from '@/platform/config/integrations'
 import { OS_ORDER } from '@/platform/config/os-registry'
+import { OS_PRICING } from '@/platform/config/plans'
 import type {
   BillingPeriod,
   ConnectionScope,
@@ -194,6 +195,28 @@ function migrateAccounts(stored: StoredAccount[]): IntegrationAccount[] {
   })
 }
 
+/**
+ * Drop stored subscriptions that no longer match the catalogue — an older build
+ * may have saved a product or plan id that has since been renamed, and every
+ * price lookup would crash on it. The record key is authoritative for osId.
+ */
+function migrateSubscriptions(
+  stored: Partial<Record<string, Partial<OSSubscription>>>,
+): Partial<Record<OSId, OSSubscription>> {
+  const subscriptions: Partial<Record<OSId, OSSubscription>> = {}
+  for (const [key, sub] of Object.entries(stored)) {
+    if (!sub || !(key in OS_PRICING)) continue
+    const osId = key as OSId
+    if (!sub.planId || !(sub.planId in OS_PRICING[osId])) continue
+    subscriptions[osId] = {
+      ...sub,
+      osId,
+      billingPeriod: sub.billingPeriod === 'yearly' ? 'yearly' : 'monthly',
+    } as OSSubscription
+  }
+  return subscriptions
+}
+
 export function PlatformProvider({ children }: { children: ReactNode }) {
   const identity = useIdentity()
   const [state, setState] = useState<PersistedState>(DEFAULT_STATE)
@@ -244,9 +267,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setState({
       organization: readStorage<Organization | null>(STORAGE_KEYS.organization, null),
-      subscriptions: readStorage<Partial<Record<OSId, OSSubscription>>>(
-        STORAGE_KEYS.subscriptions,
-        {},
+      subscriptions: migrateSubscriptions(
+        readStorage<Partial<Record<string, Partial<OSSubscription>>>>(STORAGE_KEYS.subscriptions, {}),
       ),
       accounts: migrateAccounts(readStorage<StoredAccount[]>(STORAGE_KEYS.accounts, [])),
       resources: readStorage<IntegrationResource[]>(STORAGE_KEYS.resources, []),

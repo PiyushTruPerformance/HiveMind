@@ -5,16 +5,20 @@ import { cn } from '@/lib/utils/cn'
 /**
  * A deliberately small markdown subset renderer.
  *
- * Assistant answers need bold, bullets and the occasional comparison table —
- * nothing more. Pulling in a full markdown pipeline (plus a sanitiser) for that
- * would be weight the frontend foundation does not need to carry yet. When the
- * real model backend lands and answers get richer, this is the one file that
- * gets replaced.
+ * Assistant answers need bold, bullets and the occasional comparison table.
+ * The live Ask Tru service also answers with headings, numbered steps, links
+ * and fenced code, so those are covered too — still without a full markdown
+ * pipeline (and the sanitiser it would need). Output is plain React elements:
+ * no HTML from the model is ever injected.
  */
+
+function safeHref(url: string): string | null {
+  return /^(https?:|mailto:)/i.test(url) ? url : null
+}
 
 function inline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = []
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`)/g
+  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|(?<![*\w])\*[^*\s][^*]*\*(?!\*))/g
   let last = 0
   let match: RegExpExecArray | null
   let i = 0
@@ -22,21 +26,39 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
   while ((match = pattern.exec(text)) !== null) {
     if (match.index > last) nodes.push(text.slice(last, match.index))
     const token = match[0]
+    const key = `${keyPrefix}-t${i}`
     if (token.startsWith('**')) {
       nodes.push(
-        <strong key={`${keyPrefix}-b${i}`} className="font-semibold text-foreground">
+        <strong key={key} className="font-semibold text-foreground">
           {token.slice(2, -2)}
         </strong>,
       )
-    } else {
+    } else if (token.startsWith('`')) {
       nodes.push(
-        <code
-          key={`${keyPrefix}-c${i}`}
-          className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]"
-        >
+        <code key={key} className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">
           {token.slice(1, -1)}
         </code>,
       )
+    } else if (token.startsWith('[')) {
+      const [, label, url] = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(token) ?? []
+      const href = url ? safeHref(url) : null
+      nodes.push(
+        href ? (
+          <a
+            key={key}
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium text-primary underline underline-offset-2"
+          >
+            {label}
+          </a>
+        ) : (
+          label
+        ),
+      )
+    } else {
+      nodes.push(<em key={key}>{token.slice(1, -1)}</em>)
     }
     last = match.index + token.length
     i += 1
@@ -46,21 +68,64 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
 }
 
 interface Block {
-  kind: 'p' | 'ul' | 'table'
+  kind: 'p' | 'ul' | 'ol' | 'table' | 'code' | 'h'
   lines: string[]
+  level?: number
+  language?: string
 }
+
+const isBullet = (l: string) => /^\s*[-*]\s+/.test(l)
+const isNumbered = (l: string) => /^\s*\d+[.)]\s+/.test(l)
+const isTableRow = (l: string) => l.trim().startsWith('|')
 
 function parse(source: string): Block[] {
   const blocks: Block[] = []
-  const paragraphs = source.split(/\n{2,}/)
+  const lines = source.replace(/\r\n/g, '\n').split('\n')
+  let i = 0
 
-  paragraphs.forEach((chunk) => {
-    const lines = chunk.split('\n').filter((l) => l.trim().length > 0)
-    if (lines.length === 0) return
-    if (lines.every((l) => l.trim().startsWith('|'))) blocks.push({ kind: 'table', lines })
-    else if (lines.every((l) => /^\s*[-*]\s+/.test(l))) blocks.push({ kind: 'ul', lines })
-    else blocks.push({ kind: 'p', lines })
-  })
+  while (i < lines.length) {
+    const line = lines[i]
+
+    if (line.trim().length === 0) {
+      i += 1
+      continue
+    }
+
+    const fence = /^\s*```\s*([\w:+-]*)\s*$/.exec(line)
+    if (fence) {
+      const body: string[] = []
+      i += 1
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+        body.push(lines[i])
+        i += 1
+      }
+      i += 1 // closing fence (or end of input)
+      blocks.push({ kind: 'code', lines: body, language: fence[1] || undefined })
+      continue
+    }
+
+    const heading = /^\s*(#{1,4})\s+(.*)$/.exec(line)
+    if (heading) {
+      blocks.push({ kind: 'h', lines: [heading[2]], level: heading[1].length })
+      i += 1
+      continue
+    }
+
+    const group: string[] = []
+    const kind: Block['kind'] = isTableRow(line) ? 'table' : isBullet(line) ? 'ul' : isNumbered(line) ? 'ol' : 'p'
+    const belongs = (l: string) => {
+      if (l.trim().length === 0 || /^\s*```/.test(l) || /^\s*#{1,4}\s+/.test(l)) return false
+      if (kind === 'table') return isTableRow(l)
+      if (kind === 'ul') return isBullet(l)
+      if (kind === 'ol') return isNumbered(l)
+      return !isTableRow(l) && !isBullet(l) && !isNumbered(l)
+    }
+    while (i < lines.length && belongs(lines[i])) {
+      group.push(lines[i])
+      i += 1
+    }
+    blocks.push({ kind, lines: group })
+  }
 
   return blocks
 }
@@ -79,21 +144,57 @@ export function RichText({ content, className }: { content: string; className?: 
   return (
     <div className={cn('space-y-3 text-[13.5px] leading-relaxed', className)}>
       {blocks.map((block, i) => {
-        if (block.kind === 'ul') {
+        if (block.kind === 'h') {
           return (
-            <ul key={i} className="space-y-1.5 pl-4">
+            <p
+              key={i}
+              className={cn(
+                'font-display font-semibold tracking-tight text-foreground',
+                block.level === 1 ? 'text-[15px]' : 'text-[14px]',
+              )}
+            >
+              {inline(block.lines[0], `${i}`)}
+            </p>
+          )
+        }
+
+        if (block.kind === 'code') {
+          return (
+            <pre
+              key={i}
+              className="scrollbar-thin overflow-x-auto rounded-md border bg-surface-sunken px-3 py-2 font-mono text-[12px] leading-relaxed"
+            >
+              <code>{block.lines.join('\n')}</code>
+            </pre>
+          )
+        }
+
+        if (block.kind === 'ul' || block.kind === 'ol') {
+          const List = block.kind === 'ul' ? 'ul' : 'ol'
+          return (
+            <List
+              key={i}
+              className={cn('space-y-1.5 pl-4', block.kind === 'ol' && 'pl-5')}
+            >
               {block.lines.map((line, j) => (
-                <li key={j} className="list-disc marker:text-muted-foreground">
-                  {inline(line.replace(/^\s*[-*]\s+/, ''), `${i}-${j}`)}
+                <li
+                  key={j}
+                  className={cn(
+                    'marker:text-muted-foreground',
+                    block.kind === 'ul' ? 'list-disc' : 'list-decimal',
+                  )}
+                >
+                  {inline(line.replace(/^\s*(?:[-*]|\d+[.)])\s+/, ''), `${i}-${j}`)}
                 </li>
               ))}
-            </ul>
+            </List>
           )
         }
 
         if (block.kind === 'table') {
           const rows = block.lines.filter((l) => !/^\s*\|[\s:|-]+\|\s*$/.test(l))
           const [head, ...body] = rows
+          if (!head) return null
           return (
             <div key={i} className="scrollbar-thin overflow-x-auto rounded-md border">
               <table className="w-full border-collapse text-[12.5px]">
