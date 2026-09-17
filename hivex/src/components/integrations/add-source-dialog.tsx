@@ -77,6 +77,8 @@ export function AddSourceDialog({
       await mapResource(entry.resource.id, osId, workspaceId)
       toast.success(`${entry.resource.name} added`, `Now feeding ${workspaceName}.`)
       onOpenChange(false)
+    } catch (error) {
+      toast.error('Source not added', error instanceof Error ? error.message : undefined)
     } finally {
       setBusy(false)
     }

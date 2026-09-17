@@ -1,5 +1,6 @@
 'use client'
 
+import { useQueryClient } from '@tanstack/react-query'
 import {
   createContext,
   useCallback,
@@ -47,6 +48,10 @@ import {
   SEEDED_RESOURCES,
   integrationService,
 } from '@/lib/mock/services/integrationService'
+import { isApiConfigured } from '@/lib/api/config'
+import { IntegrationApiError, integrationApi } from '@/lib/integrations/api'
+import { integrationKeys, useLiveIntegrations } from '@/lib/integrations/hooks'
+import { parseAccountId, parseResourceId } from '@/lib/integrations/model'
 import { STORAGE_KEYS, clearAllPlatformStorage, readStorage, writeStorage } from '@/lib/utils/storage'
 import {
   OS_WORKSPACE_SOURCES,
@@ -153,6 +158,20 @@ interface PlatformValue extends PersistedState {
   toggleFavorite: (osId: OSId) => void
   isFavorite: (osId: OSId) => boolean
 
+  /**
+   * Where integrations come from. 'live' reads and writes the Tru Reporting
+   * integrations backend through React Query; 'demo' keeps the local fixtures.
+   */
+  integrationsMode: 'live' | 'demo'
+  /** Backend context for integration actions — ids resolved from authenticated lists. */
+  integrationContext: {
+    workspaceIdForClient: (clientId: string) => string | null
+    primaryWorkspaceId: string | null
+    getToken: () => Promise<string>
+    isLoading: boolean
+    error: string | null
+  }
+
   setViewAsRole: (role: OrgRole | null) => void
   /** Loads the seeded TruPerformance organization and skips onboarding. */
   loadSampleOrganization: () => void
@@ -230,6 +249,40 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   const stateRef = useRef(state)
   stateRef.current = state
   const [hydrated, setHydrated] = useState(false)
+  const queryClient = useQueryClient()
+
+  /*
+   * Integrations are server state when the platform runs on real auth and a
+   * backend: accounts, resources and mappings then come from the Tru Reporting
+   * integrations backend via React Query, and the local tables below are only
+   * the demo's. Every consumer reads the same fields either way.
+   */
+  const integrationsMode: 'live' | 'demo' = isApiConfigured && identity.mode === 'clerk' ? 'live' : 'demo'
+  const liveIntegrations = useLiveIntegrations(
+    integrationsMode === 'live',
+    state.organization?.id ?? 'org',
+  )
+  const integrationSource = useMemo(
+    () =>
+      integrationsMode === 'live'
+        ? {
+            accounts: liveIntegrations.accounts,
+            resources: liveIntegrations.resources,
+            mappings: liveIntegrations.mappings,
+          }
+        : { accounts: state.accounts, resources: state.resources, mappings: state.mappings },
+    [
+      integrationsMode,
+      liveIntegrations.accounts,
+      liveIntegrations.resources,
+      liveIntegrations.mappings,
+      state.accounts,
+      state.resources,
+      state.mappings,
+    ],
+  )
+  const integrationSourceRef = useRef(integrationSource)
+  integrationSourceRef.current = integrationSource
 
   /**
    * Workspaces start from the fixtures and are replaced per-product by any
@@ -499,6 +552,37 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
 
   const mapResource = useCallback(
     async (resourceId: string, osId: OSId, workspaceId: string) => {
+      if (integrationsMode === 'live') {
+        const { resources, accounts } = integrationSourceRef.current
+        const resource = resources.find((r) => r.id === resourceId)
+        const parsed = parseResourceId(resourceId)
+        const account = resource && accounts.find((a) => a.id === resource.accountId)
+        if (!resource || !parsed || !account || parseAccountId(account.id)?.kind !== 'google') {
+          throw new IntegrationApiError(404, 'That resource is no longer available. Refresh and try again.')
+        }
+        /* The backend maps a login's resources onto the client that login belongs to. */
+        if (osId !== 'reporting' || account.scope.kind !== 'client' || account.scope.workspaceId !== workspaceId) {
+          throw new IntegrationApiError(
+            400,
+            'This Google login belongs to another client. Connect a Google login for this client to map its data.',
+          )
+        }
+        const body =
+          resource.service === 'ga4'
+            ? { workspace_id: parsed.workspaceId, ga4_property_id: resource.externalId, ga4_property_name: resource.name }
+            : resource.service === 'gsc'
+              ? { workspace_id: parsed.workspaceId, gsc_site_url: resource.externalId }
+              : resource.service === 'google-ads'
+                ? { workspace_id: parsed.workspaceId, google_ads_customer_id: resource.externalId, google_ads_customer_name: resource.name }
+                : null
+        if (!body) {
+          throw new IntegrationApiError(400, 'This resource type cannot be mapped yet.')
+        }
+        await integrationApi.saveGoogleMapping(body)
+        await queryClient.invalidateQueries({ queryKey: integrationKeys.googleStatus(parsed.workspaceId) })
+        await queryClient.invalidateQueries({ queryKey: integrationKeys.googleDiscovery(parsed.workspaceId) })
+        return
+      }
       const resource = stateRef.current.resources.find((r) => r.id === resourceId)
       if (!resource) return
       const mapping = await integrationService.mapResource(resource, osId, workspaceId)
@@ -512,10 +596,16 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         return { ...prev, mappings }
       })
     },
-    [],
+    [integrationsMode, queryClient],
   )
 
   const unmapResource = useCallback(async (resourceId: string, osId: OSId) => {
+    if (integrationsMode === 'live') {
+      throw new IntegrationApiError(
+        501,
+        'The integrations backend cannot remove a mapping. Map a different resource to replace it.',
+      )
+    }
     const existing = stateRef.current.mappings.find(
       (m) => m.resourceId === resourceId && m.osId === osId,
     )
@@ -527,7 +617,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       writeStorage(STORAGE_KEYS.mappings, mappings)
       return { ...prev, mappings }
     })
-  }, [])
+  }, [integrationsMode])
 
   const visit = useCallback((osId: OSId, workspaceId?: string) => {
     setState((prev) => {
@@ -622,11 +712,11 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
    * time someone re-mapped a property.
    */
   const workspacesWithSources = useMemo(() => {
-    const accountsById = new Map(state.accounts.map((a) => [a.id, a]))
-    const resourcesById = new Map(state.resources.map((r) => [r.id, r]))
+    const accountsById = new Map(integrationSource.accounts.map((a) => [a.id, a]))
+    const resourcesById = new Map(integrationSource.resources.map((r) => [r.id, r]))
     const byWorkspace = new Map<string, Set<string>>()
 
-    state.mappings.forEach((mapping) => {
+    integrationSource.mappings.forEach((mapping) => {
       const resource = resourcesById.get(mapping.resourceId)
       if (!resource || !accountsById.has(resource.accountId)) return
       const key = `${mapping.osId}:${mapping.workspaceId}`
@@ -635,9 +725,13 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       byWorkspace.set(key, set)
     })
 
+    /* Live: Reporting OS clients are the caller's real clients from the backend. */
+    const base =
+      integrationsMode === 'live' ? { ...workspaces, reporting: liveIntegrations.clients } : workspaces
+
     const next = {} as Record<OSId, Workspace[]>
-    ;(Object.keys(workspaces) as OSId[]).forEach((osId) => {
-      next[osId] = (workspaces[osId] ?? []).map((workspace) => {
+    ;(Object.keys(base) as OSId[]).forEach((osId) => {
+      next[osId] = (base[osId] ?? []).map((workspace) => {
         const derived = byWorkspace.get(`${osId}:${workspace.id}`)
         // Products not yet on the mapping model keep whatever they declared.
         if (!derived && workspace.connectedIntegrations.length === 0) return workspace
@@ -646,7 +740,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
       })
     })
     return next
-  }, [workspaces, state.accounts, state.resources, state.mappings])
+  }, [workspaces, integrationSource, integrationsMode, liveIntegrations.clients])
 
   const activeOS = useMemo(
     () =>
@@ -666,19 +760,19 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
    */
   const accountsFor = useCallback(
     (osId: OSId, workspaceId?: string) =>
-      state.accounts.filter((account) => {
+      integrationSource.accounts.filter((account) => {
         if (account.scope.kind === 'organization') {
           return osCanUseServices(osId, account.services)
         }
         if (account.scope.osId !== osId) return false
         return workspaceId ? account.scope.workspaceId === workspaceId : true
       }),
-    [state.accounts],
+    [integrationSource.accounts],
   )
 
   const resourcesForAccount = useCallback(
-    (accountId: string) => state.resources.filter((r) => r.accountId === accountId),
-    [state.resources],
+    (accountId: string) => integrationSource.resources.filter((r) => r.accountId === accountId),
+    [integrationSource.resources],
   )
 
   const resolvedResources = useCallback(
@@ -692,10 +786,10 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
        * "already mapped" to a client that does not exist in SEO.
        */
       const mappingByResource = new Map(
-        state.mappings.filter((m) => m.osId === osId).map((m) => [m.resourceId, m]),
+        integrationSource.mappings.filter((m) => m.osId === osId).map((m) => [m.resourceId, m]),
       )
 
-      return state.resources.flatMap((resource) => {
+      return integrationSource.resources.flatMap((resource) => {
         const account = visible.get(resource.accountId)
         /* An account can grant more than a product consumes — a Google login
            gives HR OS nothing but Gmail, so its GA4 properties stay out. */
@@ -711,7 +805,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         ]
       })
     },
-    [accountsFor, state.resources, state.mappings],
+    [accountsFor, integrationSource.resources, integrationSource.mappings],
   )
 
   const clientResources = useCallback(
@@ -722,8 +816,8 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
 
   const disconnectImpactFor = useCallback(
     (accountId: string) =>
-      integrationService.disconnectImpact(accountId, state.resources, state.mappings),
-    [state.resources, state.mappings],
+      integrationService.disconnectImpact(accountId, integrationSource.resources, integrationSource.mappings),
+    [integrationSource.resources, integrationSource.mappings],
   )
 
   /**
@@ -733,14 +827,14 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
    */
   const accountsForService = useCallback(
     (integrationId: string, osId?: OSId) =>
-      state.accounts.filter((account) => {
+      integrationSource.accounts.filter((account) => {
         if (!account.services.includes(integrationId)) return false
         if (!osId) return true
         /* Organization accounts answer for every product; client accounts only
            for the product that owns them. */
         return account.scope.kind === 'organization' || account.scope.osId === osId
       }),
-    [state.accounts],
+    [integrationSource.accounts],
   )
 
   const serviceStatus = useCallback(
@@ -772,9 +866,31 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
 
   const isFavorite = useCallback((osId: OSId) => state.favorites.includes(osId), [state.favorites])
 
+  const integrationContext = useMemo(
+    () => ({
+      workspaceIdForClient: liveIntegrations.workspaceIdForClient,
+      primaryWorkspaceId: liveIntegrations.primaryWorkspaceId,
+      getToken: liveIntegrations.getToken,
+      isLoading: liveIntegrations.isLoading,
+      error: liveIntegrations.error,
+    }),
+    [
+      liveIntegrations.workspaceIdForClient,
+      liveIntegrations.primaryWorkspaceId,
+      liveIntegrations.getToken,
+      liveIntegrations.isLoading,
+      liveIntegrations.error,
+    ],
+  )
+
   const value = useMemo<PlatformValue>(
     () => ({
       ...state,
+      accounts: integrationSource.accounts,
+      resources: integrationSource.resources,
+      mappings: integrationSource.mappings,
+      integrationsMode,
+      integrationContext,
       hydrated,
       member,
       members: DEMO_MEMBERS,
@@ -816,6 +932,9 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     }),
     [
       state,
+      integrationSource,
+      integrationsMode,
+      integrationContext,
       hydrated,
       member,
       workspacesWithSources,

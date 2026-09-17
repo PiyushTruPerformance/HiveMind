@@ -76,7 +76,12 @@ export function ClientDataSources({
   const sourceAccounts = new Set(mine.map((entry) => entry.account.id))
 
   const remove = async (entry: ResolvedResource) => {
-    await unmapResource(entry.resource.id, osId)
+    try {
+      await unmapResource(entry.resource.id, osId)
+    } catch (error) {
+      toast.error(`${entry.resource.name} was not removed`, error instanceof Error ? error.message : undefined)
+      return
+    }
     toast.info(
       `${entry.resource.name} removed`,
       `${workspaceName} no longer reads it. ${entry.account.label} stays connected.`,

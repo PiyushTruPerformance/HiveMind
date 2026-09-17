@@ -100,7 +100,12 @@ export function ResourceMappingTable({ osId }: { osId: OSId }) {
   const unmappedCount = entries.filter((e) => !e.mapping && e.resource.available).length
 
   const unmap = async (entry: ResolvedResource) => {
-    await unmapResource(entry.resource.id, osId)
+    try {
+      await unmapResource(entry.resource.id, osId)
+    } catch (error) {
+      toast.error(`${entry.resource.name} was not unmapped`, error instanceof Error ? error.message : undefined)
+      return
+    }
     toast.info(
       `${entry.resource.name} unmapped`,
       `${clientName(entry.mapping!.workspaceId)} no longer reads it. The connection is untouched.`,

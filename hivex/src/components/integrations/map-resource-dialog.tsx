@@ -68,6 +68,8 @@ export function MapResourceDialog({
         'The client picks it up on the next sync.',
       )
       onOpenChange(false)
+    } catch (error) {
+      toast.error('Mapping not saved', error instanceof Error ? error.message : undefined)
     } finally {
       setBusy(false)
     }

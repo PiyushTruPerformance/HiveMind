@@ -45,6 +45,18 @@ export function apiUrl(path: string): string {
   return join(API_BASE_URL, 'NEXT_PUBLIC_BASE_URL', path)
 }
 
+/**
+ * Core API root URL, without the `/api/v1` prefix.
+ *
+ * The Tru Reporting backend mounts its Google OAuth and integration routes
+ * (`/auth/google/*`, `/auth/status/*`, …) at the server root rather than under
+ * the versioned router, so they share NEXT_PUBLIC_BASE_URL's host but not its path.
+ */
+export function authUrl(path: string): string {
+  const root = API_BASE_URL.replace(/\/api\/v\d+$/, '')
+  return join(root, 'NEXT_PUBLIC_BASE_URL', path)
+}
+
 /** AI service URL (`/universal-chat/message` → `{NEXT_PUBLIC_AI_BACKEND_URL}/universal-chat/message`). */
 export function aiApiUrl(path: string): string {
   return join(AI_API_BASE_URL, 'NEXT_PUBLIC_AI_BACKEND_URL', path)

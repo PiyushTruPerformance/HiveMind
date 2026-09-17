@@ -22,7 +22,7 @@ import { Menu, MenuContent, MenuItem, MenuLabel, MenuTrigger } from '@/component
 import { Tooltip } from '@/components/ui/misc'
 import { useToast } from '@/components/ui/toast'
 import { useAccess } from '@/lib/access/useAccess'
-import { integrationService } from '@/lib/mock/services/integrationService'
+import { useIntegrationActions } from '@/lib/integrations/actions'
 import { DEMO_NOW_MS } from '@/lib/mock/seed'
 import { usePlatform } from '@/lib/state/platform-provider'
 import { cn } from '@/lib/utils/cn'
@@ -261,6 +261,7 @@ function AccountRow({
 }) {
   const toast = useToast()
   const { upsertAccount, restoreResources } = usePlatform()
+  const actions = useIntegrationActions()
   const [syncing, setSyncing] = useState(false)
   const [reconnecting, setReconnecting] = useState(false)
 
@@ -272,9 +273,11 @@ function AccountRow({
   const sync = async () => {
     setSyncing(true)
     try {
-      const { syncedAt } = await integrationService.syncAccount(account.id)
-      upsertAccount({ ...account, lastSyncAt: syncedAt })
+      const { syncedAt } = await actions.sync(account)
+      if (!actions.live) upsertAccount({ ...account, lastSyncAt: syncedAt })
       toast.success(`${account.label} synced`)
+    } catch (error) {
+      toast.error(`${account.label} did not sync`, error instanceof Error ? error.message : undefined)
     } finally {
       setSyncing(false)
     }
@@ -290,13 +293,17 @@ function AccountRow({
   const reconnect = async () => {
     setReconnecting(true)
     try {
-      const restored = await integrationService.reconnectAccount(account)
-      upsertAccount(restored)
-      restoreResources(restored.id)
+      const restored = await actions.reconnect(account)
+      if (!actions.live) {
+        upsertAccount(restored)
+        restoreResources(restored.id)
+      }
       toast.success(
         `${account.label} reconnected`,
         'Existing client mappings were kept, so their dashboards are back.',
       )
+    } catch (error) {
+      toast.error(`${account.label} was not reconnected`, error instanceof Error ? error.message : undefined)
     } finally {
       setReconnecting(false)
     }

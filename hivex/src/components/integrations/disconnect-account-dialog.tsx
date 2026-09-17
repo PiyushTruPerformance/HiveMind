@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/toast'
-import { integrationService } from '@/lib/mock/services/integrationService'
+import { useIntegrationActions } from '@/lib/integrations/actions'
 import { usePlatform } from '@/lib/state/platform-provider'
 import { OS_REGISTRY } from '@/platform/config/os-registry'
 import type { IntegrationAccount } from '@/platform/types'
@@ -45,6 +45,7 @@ export function DisconnectAccountDialog({
     removeAccount,
     workspaces,
   } = usePlatform()
+  const actions = useIntegrationActions()
   const [busy, setBusy] = useState(false)
 
   if (!account) return null
@@ -68,8 +69,8 @@ export function DisconnectAccountDialog({
   const confirm = async () => {
     setBusy(true)
     try {
-      await integrationService.disconnectAccount(account.id)
-      disconnectAccount(account.id)
+      await actions.disconnect(account)
+      if (!actions.live) disconnectAccount(account.id)
       toast.info(
         `${account.label} disconnected`,
         affectedNames.length > 0
@@ -77,6 +78,8 @@ export function DisconnectAccountDialog({
           : 'No clients were using it, so it has been removed entirely.',
       )
       onOpenChange(false)
+    } catch (error) {
+      toast.error(`${account.label} was not disconnected`, error instanceof Error ? error.message : undefined)
     } finally {
       setBusy(false)
     }
@@ -87,13 +90,15 @@ export function DisconnectAccountDialog({
   const forget = async () => {
     setBusy(true)
     try {
-      await integrationService.disconnectAccount(account.id)
-      removeAccount(account.id)
+      await actions.disconnect(account)
+      if (!actions.live) removeAccount(account.id)
       toast.info(
         `${account.label} removed`,
         `${impact.mappedResourceCount} client ${impact.mappedResourceCount === 1 ? 'mapping was' : 'mappings were'} deleted with it.`,
       )
       onOpenChange(false)
+    } catch (error) {
+      toast.error(`${account.label} was not removed`, error instanceof Error ? error.message : undefined)
     } finally {
       setBusy(false)
     }

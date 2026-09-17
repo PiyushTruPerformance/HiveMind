@@ -24,12 +24,13 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { ErrorState } from '@/components/ui/data'
-import { Field, Input } from '@/components/ui/field'
+import { Field, Input, Select } from '@/components/ui/field'
 import { useToast } from '@/components/ui/toast'
-import { integrationService } from '@/lib/mock/services/integrationService'
+import { useIntegrationActions } from '@/lib/integrations/actions'
 import { usePlatform } from '@/lib/state/platform-provider'
 import { cn } from '@/lib/utils/cn'
 import {
+  GOOGLE_PROVIDER,
   getIntegration,
   providerIconIntegration,
   providerName,
@@ -91,7 +92,9 @@ export function ConnectAccountDialog({
   onConnected?: (account: IntegrationAccount, resources: IntegrationResource[]) => void
 }) {
   const toast = useToast()
-  const { accounts, upsertAccount, removeAccount, addResources, connectScope } = usePlatform()
+  const { accounts, upsertAccount, removeAccount, addResources, connectScope, integrationsMode, workspaces } =
+    usePlatform()
+  const actions = useIntegrationActions()
 
   const [step, setStep] = useState<Step>('authorize')
   const [busy, setBusy] = useState(false)
@@ -99,9 +102,16 @@ export function ConnectAccountDialog({
   const [apiKey, setApiKey] = useState('')
   const [account, setAccount] = useState<IntegrationAccount | null>(null)
   const [resources, setResources] = useState<IntegrationResource[]>([])
+  /*
+   * Live Google connections belong to one client (that is how the integrations
+   * backend stores them), so connecting from an organization-level surface
+   * asks which client the login is for.
+   */
+  const [chosenClientId, setChosenClientId] = useState('')
 
   useEffect(() => {
     if (!open) return
+    setChosenClientId('')
     setStep('authorize')
     setBusy(false)
     setError(null)
@@ -119,8 +129,17 @@ export function ConnectAccountDialog({
     }
   }, [open, account, removeAccount])
 
-  const scope: ConnectionScope = connectScope(osId, workspaceId)
-  const clientScoped = Boolean(workspaceId)
+  const live = integrationsMode === 'live'
+  const needsClient = live && provider === GOOGLE_PROVIDER && !workspaceId
+  const clientOptions = workspaces.reporting ?? []
+  const effectiveWorkspaceId = needsClient ? chosenClientId || undefined : workspaceId
+  const effectiveWorkspaceName = needsClient
+    ? clientOptions.find((c) => c.id === chosenClientId)?.name
+    : workspaceName
+  const scope: ConnectionScope = needsClient
+    ? connectScope('reporting', effectiveWorkspaceId)
+    : connectScope(osId, workspaceId)
+  const clientScoped = Boolean(effectiveWorkspaceId)
   const services = provider ? servicesForProvider(provider) : []
   const iconIntegration = provider ? providerIconIntegration(provider) : null
 
@@ -130,22 +149,24 @@ export function ConnectAccountDialog({
     setError(null)
 
     try {
-      const authorized = await integrationService.authorizeAccount(provider, scope, {
-        ...(apiKey.trim()
-          ? { label: `API key ••••${apiKey.slice(-4).toUpperCase()}` }
-          : {}),
+      const pending = actions.authorize(provider, {
+        scope,
+        osId,
+        ...(effectiveWorkspaceId ? { clientId: effectiveWorkspaceId } : {}),
         existingLabels: accounts.map((a) => a.label),
-        connectedIn: osId,
+        ...(apiKey.trim() ? { label: `API key ••••${apiKey.slice(-4).toUpperCase()}` } : {}),
       })
+      /* Live: the provider window is already open; discovery follows from the backend. */
+      if (live) setStep('discover')
+      const { account: authorized, resources: discovered } = await pending
 
       setAccount(authorized)
-      upsertAccount({ ...authorized, status: 'discovering' })
-      setStep('discover')
-
-      const discovered = await integrationService.discoverResources(authorized)
       setResources(discovered)
-      addResources(discovered)
-      upsertAccount(authorized)
+      if (!live) {
+        // Demo only: server state in live mode arrives through React Query.
+        upsertAccount(authorized)
+        addResources(discovered)
+      }
       setStep('review')
       onConnected?.(authorized, discovered)
     } catch (e) {
@@ -155,7 +176,7 @@ export function ConnectAccountDialog({
     } finally {
       setBusy(false)
     }
-  }, [provider, scope, apiKey, accounts, upsertAccount, addResources, onConnected])
+  }, [provider, scope, osId, effectiveWorkspaceId, live, actions, apiKey, accounts, upsertAccount, addResources, onConnected])
 
   if (!provider) return null
 
@@ -174,7 +195,7 @@ export function ConnectAccountDialog({
               <DialogTitle>Connect a {label} account</DialogTitle>
               <DialogDescription>
                 {clientScoped
-                  ? `This login will belong to ${workspaceName ?? 'this client'} only.`
+                  ? `This login will belong to ${effectiveWorkspaceName ?? 'this client'} only.`
                   : 'Added once for your organization — every product can use it.'}
               </DialogDescription>
             </div>
@@ -182,10 +203,27 @@ export function ConnectAccountDialog({
         </DialogHeader>
 
         <ScopeNotice
-          clientScoped={clientScoped}
+          clientScoped={clientScoped || needsClient}
           osId={osId}
-          workspaceName={workspaceName}
+          workspaceName={effectiveWorkspaceName}
         />
+
+        {needsClient && step === 'authorize' ? (
+          <Field label="Client" hint="Google logins are connected per client." required>
+            {(props) => (
+              <Select {...props} value={chosenClientId} onChange={(e) => setChosenClientId(e.target.value)}>
+                <option value="" disabled>
+                  {clientOptions.length === 0 ? 'No clients available' : 'Choose a client…'}
+                </option>
+                {clientOptions.map((client) => (
+                  <option key={client.id} value={client.id}>
+                    {client.name}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+        ) : null}
 
         <StepRail current={stepIndex} />
 
@@ -214,7 +252,9 @@ export function ConnectAccountDialog({
               <div className="flex flex-col items-center justify-center gap-3 py-14">
                 <Loader2 className="size-5 animate-spin text-muted-foreground" />
                 <p className="text-[13px] text-muted-foreground">
-                  Reading what {account?.label ?? 'this account'} can see…
+                  {live
+                    ? `Finish signing in to ${label} in the window that opened…`
+                    : `Reading what ${account?.label ?? 'this account'} can see…`}
                 </p>
               </div>
             ) : null}
@@ -248,7 +288,7 @@ export function ConnectAccountDialog({
                 <Button
                   variant="primary"
                   loading={busy}
-                  disabled={isApiKey && apiKey.trim().length < 6}
+                  disabled={(isApiKey && apiKey.trim().length < 6) || (needsClient && !chosenClientId)}
                   onClick={() => void run()}
                 >
                   {isApiKey ? 'Save and verify' : `Continue to ${label}`}
