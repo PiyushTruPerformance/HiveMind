@@ -20,11 +20,12 @@ function systemPrefersDark(): boolean {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>('system')
+  // Light is the default; dark or system applies only when the user picks it.
+  const [theme, setThemeState] = useState<Theme>('light')
   const [resolved, setResolved] = useState<'light' | 'dark'>('light')
 
   useEffect(() => {
-    setThemeState(readStorage<Theme>(STORAGE_KEYS.theme, 'system'))
+    setThemeState(readStorage<Theme>(STORAGE_KEYS.theme, 'light'))
   }, [])
 
   useEffect(() => {

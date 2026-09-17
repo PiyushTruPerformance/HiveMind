@@ -50,7 +50,7 @@ export const viewport: Viewport = {
 const THEME_BOOTSTRAP = `
 (function(){try{
 var v=localStorage.getItem('hivex:theme');
-var t=v?JSON.parse(v):'system';
+var t=v?JSON.parse(v):'light';
 var d=t==='dark'||(t==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches);
 if(d){document.documentElement.classList.add('dark');document.documentElement.style.colorScheme='dark';}
 }catch(e){}})();

@@ -1,15 +1,19 @@
 'use client'
 
 import { AnimatePresence, motion } from 'motion/react'
+import { usePathname } from 'next/navigation'
 import { useEffect, useState, type ReactNode } from 'react'
 
 import { AssistantDock } from '@/components/assistant/assistant-dock'
 import { BrandLockup } from '@/components/common/brand-mark'
 import { Button } from '@/components/ui/button'
+import { useAccess } from '@/lib/access/useAccess'
 import { useIdentity } from '@/lib/state/identity-provider'
 import { usePlatform } from '@/lib/state/platform-provider'
 import { cn } from '@/lib/utils/cn'
 import { initialsOf, slugify } from '@/lib/utils/format'
+// TEMPORARY REPORTING OS EMBED — remove with the embed (see below).
+import { isEmbeddedReportingPath } from '@/os/reporting/embed'
 
 import { CommandPalette, useCommandPalette } from './command-palette'
 import { ContextSidebar } from './context-sidebar'
@@ -33,6 +37,25 @@ export function AppShell({ children }: { children: ReactNode }) {
   const identity = useIdentity()
   const command = useCommandPalette()
   const [navOpen, setNavOpen] = useState(false)
+  const pathname = usePathname() ?? ''
+  const access = useAccess()
+
+  /*
+   * TEMPORARY REPORTING OS EMBED
+   *
+   * While the deployed Tru Reporting OS is embedded (native HiveX Reporting OS
+   * temporarily disabled — see src/os/reporting/embed.ts), its pages take the
+   * whole content area next to the OS rail: no top bar, no section sidebar, no
+   * content padding. Derived from the URL, so direct loads and refreshes match
+   * client-side navigation. Only when the product actually opens — a guard
+   * redirect or access-denied screen keeps the normal shell.
+   *
+   * The top bar is hidden at lg and up only: below lg the rail is not shown and
+   * the top bar's menu is the only way to switch products.
+   *
+   * To restore the native Reporting OS, delete `immersive` and its uses below.
+   */
+  const immersive = isEmbeddedReportingPath(pathname) && access.canOpenOS('reporting')
 
   /*
    * No onboarding wizard any more. An organization is still the container for
@@ -66,15 +89,23 @@ export function AppShell({ children }: { children: ReactNode }) {
       <OSRail />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <TopBar onOpenCommand={() => command.setOpen(true)} onOpenNav={() => setNavOpen(true)} />
+        <div className={cn('contents', immersive && 'lg:hidden')}>
+          <TopBar onOpenCommand={() => command.setOpen(true)} onOpenNav={() => setNavOpen(true)} />
+        </div>
 
         <div className="flex min-h-0 flex-1">
-          <aside className="hidden w-60 shrink-0 border-r bg-surface lg:block" aria-label="Section navigation">
-            <ContextSidebar />
-          </aside>
+          {!immersive ? (
+            <aside className="hidden w-60 shrink-0 border-r bg-surface lg:block" aria-label="Section navigation">
+              <ContextSidebar />
+            </aside>
+          ) : null}
 
-          <main className="scrollbar-thin min-w-0 flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">{children}</div>
+          <main className={cn('scrollbar-thin min-w-0 flex-1', immersive ? 'overflow-hidden' : 'overflow-y-auto')}>
+            {immersive ? (
+              <div className="size-full">{children}</div>
+            ) : (
+              <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">{children}</div>
+            )}
           </main>
 
           <AssistantDock />

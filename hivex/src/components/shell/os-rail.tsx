@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Blocks, LayoutGrid, Settings, ShieldCheck } from 'lucide-react'
+import { Blocks, LayoutGrid, Settings, ShieldCheck, Sparkles } from 'lucide-react'
 
 import { OSTile } from '@/components/common/os-tile'
 import { BrandMark } from '@/components/common/brand-mark'
@@ -10,6 +10,7 @@ import { Tooltip } from '@/components/ui/misc'
 import { useAccess } from '@/lib/access/useAccess'
 import { cn } from '@/lib/utils/cn'
 import { OS_LIST } from '@/platform/config/os-registry'
+import { ASK_TRU_NAME } from '@/platform/config/ask-tru'
 import { BRAND } from '@/platform/config/brand'
 
 /**
@@ -88,6 +89,8 @@ export function OSRail() {
       </div>
 
       <div className="mt-auto flex flex-col items-center gap-1">
+        <AskTruRailButton pathname={pathname} />
+        <div className="my-1.5 h-px w-8 bg-border" />
         <RailLink
           href="/app/integrations"
           label="Integrations"
@@ -136,6 +139,29 @@ function RailLink({
         )}
       >
         <Icon className="size-[18px]" />
+      </Link>
+    </Tooltip>
+  )
+}
+
+/** Ask Tru, reachable from anywhere the rail is — opens the full-page assistant. */
+function AskTruRailButton({ pathname }: { pathname: string }) {
+  const active = pathname === '/app/assistant'
+
+  return (
+    <Tooltip content={ASK_TRU_NAME} side="right">
+      <Link
+        href="/app/assistant"
+        aria-label={ASK_TRU_NAME}
+        aria-current={active ? 'page' : undefined}
+        className={cn(
+          'flex size-10 items-center justify-center rounded-lg transition-colors',
+          active
+            ? 'bg-primary text-primary-foreground shadow-xs'
+            : 'bg-primary-soft text-primary hover:bg-primary hover:text-primary-foreground',
+        )}
+      >
+        <Sparkles className="size-[18px]" />
       </Link>
     </Tooltip>
   )
