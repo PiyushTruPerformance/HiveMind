@@ -50,7 +50,17 @@ export function aiApiUrl(path: string): string {
   return join(AI_API_BASE_URL, 'NEXT_PUBLIC_AI_BACKEND_URL', path)
 }
 
+/**
+ * Optional direct AI service URL for the WebSocket, including `/api/ai/v1`.
+ * Needed when NEXT_PUBLIC_AI_BACKEND_URL is a relative proxy path: hosting
+ * rewrites (e.g. Vercel) forward HTTP only, never WebSocket upgrades.
+ */
+export const AI_WS_BASE_URL = trimBase(process.env.NEXT_PUBLIC_AI_WS_URL)
+
 /** AI service WebSocket URL: http → ws, https → wss, same host and prefix. */
 export function aiWsUrl(path: string): string {
-  return aiApiUrl(path).replace(/^http(s?):\/\//i, (_match, secure: string) => `ws${secure}://`)
+  const url = AI_WS_BASE_URL
+    ? join(AI_WS_BASE_URL, 'NEXT_PUBLIC_AI_WS_URL', path)
+    : aiApiUrl(path)
+  return url.replace(/^http(s?):\/\//i, (_match, secure: string) => `ws${secure}://`)
 }
