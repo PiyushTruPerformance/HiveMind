@@ -48,7 +48,6 @@ import {
   SEEDED_RESOURCES,
   integrationService,
 } from '@/lib/mock/services/integrationService'
-import { isApiConfigured } from '@/lib/api/config'
 import { IntegrationApiError, integrationApi } from '@/lib/integrations/api'
 import { integrationKeys, useLiveIntegrations } from '@/lib/integrations/hooks'
 import { parseAccountId, parseResourceId } from '@/lib/integrations/model'
@@ -165,8 +164,6 @@ interface PlatformValue extends PersistedState {
   integrationsMode: 'live' | 'demo'
   /** Backend context for integration actions — ids resolved from authenticated lists. */
   integrationContext: {
-    workspaceIdForClient: (clientId: string) => string | null
-    primaryWorkspaceId: string | null
     getToken: () => Promise<string>
     isLoading: boolean
     error: string | null
@@ -254,10 +251,10 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
   /*
    * Integrations are server state when the platform runs on real auth and a
    * backend: accounts, resources and mappings then come from the Tru Reporting
-   * integrations backend via React Query, and the local tables below are only
+   * HiveX integrations API (/api/integrations) via React Query, and the local tables below are only
    * the demo's. Every consumer reads the same fields either way.
    */
-  const integrationsMode: 'live' | 'demo' = isApiConfigured && identity.mode === 'clerk' ? 'live' : 'demo'
+  const integrationsMode: 'live' | 'demo' = identity.mode === 'clerk' ? 'live' : 'demo'
   const liveIntegrations = useLiveIntegrations(
     integrationsMode === 'live',
     state.organization?.id ?? 'org',
@@ -560,7 +557,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         if (!resource || !parsed || !account || parseAccountId(account.id)?.kind !== 'google') {
           throw new IntegrationApiError(404, 'That resource is no longer available. Refresh and try again.')
         }
-        /* The backend maps a login's resources onto the client that login belongs to. */
+        /* A client's Google connection feeds that client; its resources map onto it alone. */
         if (osId !== 'reporting' || account.scope.kind !== 'client' || account.scope.workspaceId !== workspaceId) {
           throw new IntegrationApiError(
             400,
@@ -569,18 +566,18 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         }
         const body =
           resource.service === 'ga4'
-            ? { workspace_id: parsed.workspaceId, ga4_property_id: resource.externalId, ga4_property_name: resource.name }
+            ? { client_id: parsed.clientId, ga4_property_id: resource.externalId, ga4_property_name: resource.name }
             : resource.service === 'gsc'
-              ? { workspace_id: parsed.workspaceId, gsc_site_url: resource.externalId }
+              ? { client_id: parsed.clientId, gsc_site_url: resource.externalId }
               : resource.service === 'google-ads'
-                ? { workspace_id: parsed.workspaceId, google_ads_customer_id: resource.externalId, google_ads_customer_name: resource.name }
+                ? { client_id: parsed.clientId, google_ads_customer_id: resource.externalId, google_ads_customer_name: resource.name }
                 : null
         if (!body) {
-          throw new IntegrationApiError(400, 'This resource type cannot be mapped yet.')
+          // client_properties has no Business Profile column, so locations cannot be assigned.
+          throw new IntegrationApiError(400, 'Business Profile locations cannot be assigned to a client yet.')
         }
-        await integrationApi.saveGoogleMapping(body)
-        await queryClient.invalidateQueries({ queryKey: integrationKeys.googleStatus(parsed.workspaceId) })
-        await queryClient.invalidateQueries({ queryKey: integrationKeys.googleDiscovery(parsed.workspaceId) })
+        await integrationApi.saveGoogleMapping(await liveIntegrations.getToken(), body)
+        await queryClient.invalidateQueries({ queryKey: integrationKeys.google() })
         return
       }
       const resource = stateRef.current.resources.find((r) => r.id === resourceId)
@@ -596,14 +593,14 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
         return { ...prev, mappings }
       })
     },
-    [integrationsMode, queryClient],
+    [integrationsMode, queryClient, liveIntegrations.getToken],
   )
 
   const unmapResource = useCallback(async (resourceId: string, osId: OSId) => {
     if (integrationsMode === 'live') {
       throw new IntegrationApiError(
         501,
-        'The integrations backend cannot remove a mapping. Map a different resource to replace it.',
+        'The shared integration model has no way to clear an assignment. Assign a different resource to replace it.',
       )
     }
     const existing = stateRef.current.mappings.find(
@@ -868,15 +865,11 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
 
   const integrationContext = useMemo(
     () => ({
-      workspaceIdForClient: liveIntegrations.workspaceIdForClient,
-      primaryWorkspaceId: liveIntegrations.primaryWorkspaceId,
       getToken: liveIntegrations.getToken,
       isLoading: liveIntegrations.isLoading,
       error: liveIntegrations.error,
     }),
     [
-      liveIntegrations.workspaceIdForClient,
-      liveIntegrations.primaryWorkspaceId,
       liveIntegrations.getToken,
       liveIntegrations.isLoading,
       liveIntegrations.error,

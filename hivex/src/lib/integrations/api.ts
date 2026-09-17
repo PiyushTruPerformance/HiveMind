@@ -1,47 +1,25 @@
-import { apiUrl, authUrl } from '@/lib/api/config'
-
 /**
- * Integrations API client — the Tru Reporting core backend.
+ * Integrations API client — HiveX's own integration API (`/api/integrations/*`).
  *
- * HiveX is a client of the existing integration backend; nothing here
- * reimplements it. Two route families:
- *
- *   /api/v1/*   Clerk-authenticated: clients, data workspaces, Nango tool
- *               connectors, connector sync.
- *   /auth/*     Google OAuth, status, discovery, mapping and disconnect. These
- *               backend routes take no Authorization header (as the Reporting
- *               client calls them). HiveX only ever passes workspace ids that the
- *               authenticated `/workspaces/` endpoint returned for this user.
- *
- * Contracts mirror `server/app/endpoints/{integration,nango,connectors,clients,
- * workspaces}.py` in the Tru Reporting repository.
+ * Same-origin route handlers in this app, which authenticate the Clerk session
+ * and resolve tenant, client and internal workspace context on the server. The
+ * browser never sends or receives a workspace id; clients are the only handle.
  */
 
 /* ---------------------------------------------------------------- types */
 
-export interface BackendClient {
+export interface IntegrationClient {
   id: string
   name: string | null
   key: string
-  initials?: string | null
-  accent?: string | null
-  created_at?: string | null
+  initials: string | null
+  created_at: string | null
 }
 
-/** A `workspaces` row: the per-client data workspace integrations hang off. */
-export interface DataWorkspace {
-  id: string
-  name: string
-  connected_to: string | null
-  created_at?: string | null
-}
-
-/** A `connected_accounts` row, as `/auth/status` returns the mapped ones. */
 export interface ConnectedAccountRow {
-  id?: string
   account_id: string
   account_name: string | null
-  account_type: 'ga4_property' | 'gsc_site' | 'google_ads_customer' | string
+  account_type: string
   key?: string | null
   is_verified?: boolean | null
   metadata?: Record<string, unknown> | null
@@ -49,33 +27,36 @@ export interface ConnectedAccountRow {
   updated_at?: string | null
 }
 
-export interface GoogleStatus {
+export interface GoogleClientStatus {
+  client_id: string
   connected: boolean
+  scopes_granted: string[]
   ga4: ConnectedAccountRow | null
   gsc: ConnectedAccountRow | null
   google_ads: ConnectedAccountRow | null
-  /** Absent when not connected. */
-  scopes_granted?: string[]
+  connected_at: string | null
 }
 
 export interface GoogleDiscovery {
-  ga4_properties: { id: string; name: string; is_verified?: boolean; key?: string | null; client_name?: string | null }[]
-  gsc_sites: { url: string; permissionLevel?: string; is_verified?: boolean; key?: string | null; client_name?: string | null }[]
-  google_ads_customers: {
-    id: string
-    name: string
-    is_verified?: boolean
-    key?: string | null
-    client_name?: string | null
-    is_manager?: boolean
-    currency_code?: string | null
-    time_zone?: string | null
-  }[]
-  granted_scopes: string[]
+  client_id: string
+  ga4_properties: { id: string; name: string; parent_account: string | null }[]
+  gsc_sites: { url: string; permission_level: string | null }[]
+  google_ads_customers: { id: string; name: string; is_manager: boolean; currency_code: string | null }[]
+  google_business_locations: { id: string; name: string; address: string | null }[]
 }
 
+export interface DiscoveryRun {
+  ga4_properties_found: number
+  gsc_sites_found: number
+  google_ads_accounts_found: number
+  google_business_locations_found: number
+  errors: Record<string, string>
+}
+
+export type GoogleTool = 'analytics' | 'searchconsole' | 'google_ads' | 'google_business'
+
 export interface GoogleMappingRequest {
-  workspace_id: string
+  client_id: string
   ga4_property_id?: string
   ga4_property_name?: string
   gsc_site_url?: string
@@ -83,12 +64,14 @@ export interface GoogleMappingRequest {
   google_ads_customer_name?: string
 }
 
-/** Google tool keys the backend's OAuth scope map understands. */
-export type GoogleTool = 'analytics' | 'searchconsole' | 'google_ads' | 'google_business'
+export interface ToolStatus {
+  supported: string[]
+  connected_providers: string[]
+}
 
 export interface NangoConnectSession {
-  token: string
-  connect_link?: string
+  token: string | null
+  connect_link: string | null
   expires_at: string
 }
 
@@ -106,12 +89,29 @@ export class IntegrationApiError extends Error {
 
 /* ---------------------------------------------------------------- transport */
 
-async function request<T>(url: string, init: RequestInit, failure: string): Promise<T> {
+const BASE = '/api/integrations'
+
+async function request<T>(
+  token: string,
+  path: string,
+  init: RequestInit & { json?: unknown } = {},
+  failure = 'Integrations request failed',
+): Promise<T> {
+  const { json, ...rest } = init
   let response: Response
   try {
-    response = await fetch(url, { ...init, cache: 'no-store' })
+    response = await fetch(`${BASE}${path}`, {
+      ...rest,
+      cache: 'no-store',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(json !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...rest.headers,
+      },
+      ...(json !== undefined ? { body: JSON.stringify(json) } : {}),
+    })
   } catch {
-    throw new IntegrationApiError(0, `${failure}: the integrations service could not be reached.`, true)
+    throw new IntegrationApiError(0, `${failure}: the server could not be reached.`, true)
   }
 
   if (!response.ok) {
@@ -122,109 +122,87 @@ async function request<T>(url: string, init: RequestInit, failure: string): Prom
     } catch {
       detail = undefined
     }
-    if (response.status === 401) {
-      throw new IntegrationApiError(401, 'Your session could not be verified. Sign in again and retry.')
-    }
-    if (response.status === 403) {
-      throw new IntegrationApiError(403, detail ?? 'You do not have permission to do that.')
-    }
-    throw new IntegrationApiError(response.status, detail ? `${failure}: ${detail}` : `${failure} (${response.status})`)
+    if (response.status === 401) throw new IntegrationApiError(401, 'Your session could not be verified. Sign in again.')
+    throw new IntegrationApiError(response.status, detail ?? `${failure} (${response.status})`)
   }
 
-  const text = await response.text()
-  if (!text) return undefined as T
   try {
-    return JSON.parse(text) as T
+    return (await response.json()) as T
   } catch {
-    throw new IntegrationApiError(response.status, `${failure}: the service returned a malformed response.`)
+    throw new IntegrationApiError(response.status, `${failure}: the server returned a malformed response.`)
   }
 }
-
-const json = { 'Content-Type': 'application/json' }
-const bearer = (token: string) => ({ Authorization: `Bearer ${token}` })
 
 /* ---------------------------------------------------------------- endpoints */
 
 export const integrationApi = {
-  /* Tenant context — both scoped server-side to the caller's company. */
-  listClients: (token: string) =>
-    request<BackendClient[]>(apiUrl('/clients/'), { headers: bearer(token) }, 'Could not load clients'),
+  listClients: (token: string) => request<IntegrationClient[]>(token, '/clients', {}, 'Could not load clients'),
 
-  listDataWorkspaces: (token: string) =>
-    request<DataWorkspace[]>(apiUrl('/workspaces/'), { headers: bearer(token) }, 'Could not load workspaces'),
+  /* Google data connectors */
+  googleStatus: (token: string) =>
+    request<GoogleClientStatus[]>(token, '/google', {}, 'Could not load Google connections'),
 
-  /* Google (first-party OAuth pipeline). */
-
-  /** Browser-navigation URL: the backend answers with a redirect to Google's consent screen. */
-  googleStartUrl: (workspaceId: string, tools: GoogleTool[]) => {
-    const params = new URLSearchParams({ workspace_id: workspaceId, tools: tools.join(',') })
-    return authUrl(`/auth/google/start?${params.toString()}`)
-  },
-
-  googleStatus: (workspaceId: string) =>
-    request<GoogleStatus>(
-      authUrl(`/auth/status/${encodeURIComponent(workspaceId)}`),
-      {},
-      'Could not load Google connection status',
-    ),
-
-  googleDiscovery: (workspaceId: string) =>
+  googleDiscovery: (token: string, clientId: string) =>
     request<GoogleDiscovery>(
-      authUrl(`/auth/google/discovery?workspace_id=${encodeURIComponent(workspaceId)}`),
+      token,
+      `/google/discovery?client_id=${encodeURIComponent(clientId)}`,
       {},
       'Could not load Google resources',
     ),
 
-  saveGoogleMapping: (body: GoogleMappingRequest) =>
-    request<{ status: string; message?: string }>(
-      authUrl('/auth/mapping'),
-      { method: 'POST', headers: json, body: JSON.stringify(body) },
-      'Could not save the mapping',
+  googleRediscover: (token: string, clientId: string) =>
+    request<DiscoveryRun>(token, '/google/discovery', { method: 'POST', json: { client_id: clientId } }, 'Discovery failed'),
+
+  googleConnectUrl: (token: string, clientId: string, returnTo: string, tools?: GoogleTool[]) =>
+    request<{ url: string }>(
+      token,
+      '/google/connect',
+      { method: 'POST', json: { client_id: clientId, return_to: returnTo, ...(tools ? { tools } : {}) } },
+      'Could not start Google sign-in',
     ),
 
-  disconnectGoogleTool: (workspaceId: string, tool: GoogleTool) =>
-    request<{ status: string }>(
-      authUrl(`/auth/disconnect/${encodeURIComponent(workspaceId)}/${tool}`),
-      { method: 'DELETE' },
+  saveGoogleMapping: (token: string, body: GoogleMappingRequest) =>
+    request<{ status: string }>(token, '/google/mapping', { method: 'POST', json: body }, 'Could not save the assignment'),
+
+  disconnectGoogle: (token: string, clientId: string, tools?: GoogleTool[]) =>
+    request<{ status: string; disconnected: string[] }>(
+      token,
+      '/google/disconnect',
+      { method: 'POST', json: { client_id: clientId, ...(tools ? { tools } : {}) } },
       'Could not disconnect Google',
     ),
 
-  /* Nango (tool connectors). Connections are per user within a workspace. */
+  syncClient: (token: string, clientId: string) =>
+    request<Record<string, unknown>>(token, '/google/sync', { method: 'POST', json: { client_id: clientId } }, 'Sync failed'),
 
-  nangoStatus: (token: string, workspaceId: string) =>
-    request<{ connected_providers: string[] }>(
-      apiUrl(`/nango/status/${encodeURIComponent(workspaceId)}`),
-      { headers: bearer(token) },
-      'Could not load tool connections',
-    ),
+  /* Tool connectors (Nango, per user) */
+  toolStatus: (token: string) => request<ToolStatus>(token, '/tools', {}, 'Could not load tool connections'),
 
-  nangoConnectSession: (token: string, provider: string, workspaceId: string) =>
+  toolConnectSession: (token: string, provider: string) =>
     request<NangoConnectSession>(
-      apiUrl('/nango/connect-session'),
-      { method: 'POST', headers: { ...json, ...bearer(token) }, body: JSON.stringify({ provider, workspace_id: workspaceId }) },
+      token,
+      '/tools/connect-session',
+      { method: 'POST', json: { provider } },
       'Could not start the connection',
     ),
 
-  nangoFinalize: (token: string, provider: string, workspaceId: string) =>
+  toolFinalize: (token: string, provider: string) =>
     request<{ status: string; message?: string }>(
-      apiUrl('/nango/finalize-connection'),
-      { method: 'POST', headers: { ...json, ...bearer(token) }, body: JSON.stringify({ provider, workspace_id: workspaceId }) },
+      token,
+      '/tools/finalize',
+      { method: 'POST', json: { provider } },
       'Could not finish the connection',
     ),
 
-  nangoDisconnect: (token: string, provider: string, workspaceId: string) =>
-    request<{ status: string }>(
-      apiUrl(`/nango/disconnect/${encodeURIComponent(workspaceId)}/${encodeURIComponent(provider)}`),
-      { method: 'DELETE', headers: bearer(token) },
-      'Could not disconnect',
-    ),
+  toolDisconnect: (token: string, provider: string) =>
+    request<{ status: string }>(token, '/tools/disconnect', { method: 'POST', json: { provider } }, 'Could not disconnect'),
 
-  /* Data sync for one client (GA4, Search Console, Google Ads). */
-  syncClient: (token: string, clientId: string) =>
-    request<unknown>(
-      apiUrl(`/connectors/sync/${encodeURIComponent(clientId)}?days=90`),
-      { method: 'POST', headers: bearer(token) },
-      'Sync failed',
+  toolTargets: (token: string, provider: string) =>
+    request<{ targets: { id: string; label: string }[] }>(
+      token,
+      `/tools/targets?provider=${encodeURIComponent(provider)}`,
+      {},
+      'Could not load targets',
     ),
 }
 

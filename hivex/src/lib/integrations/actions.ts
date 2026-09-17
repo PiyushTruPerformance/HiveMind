@@ -8,46 +8,37 @@ import { usePlatform } from '@/lib/state/platform-provider'
 import { GOOGLE_PROVIDER, providerName } from '@/platform/config/integrations'
 import type { ConnectionScope, IntegrationAccount, IntegrationResource, OSId } from '@/platform/types'
 
-import { IntegrationApiError, integrationApi } from './api'
+import { IntegrationApiError, integrationApi, type GoogleTool } from './api'
 import { integrationKeys } from './hooks'
-import {
-  ALL_GOOGLE_TOOLS,
-  GOOGLE_SERVICES,
-  googleAccountId,
-  googleResources,
-  isNangoProvider,
-  nangoAccountId,
-  parseAccountId,
-} from './model'
+import { GOOGLE_SERVICES, parseAccountId, toolAccountId } from './model'
 
 /**
  * Integration actions for the existing Integrations UI.
  *
- * Live (Clerk + NEXT_PUBLIC_BASE_URL): every action is a real backend call,
- * followed by React Query invalidation — nothing is written to local state.
- * Demo (no keys): the original local mock service, unchanged.
+ * Live (Clerk): every action calls HiveX's `/api/integrations/*` and then
+ * invalidates the affected React Query keys — no local state is written.
+ * Demo (no Clerk keys): the original local mock service, unchanged.
  */
 
-const POLL_MS = 1_500
 const POPUP_TIMEOUT_MS = 10 * 60_000
-
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-/**
- * Opens the popup synchronously, inside the user's click, so browsers do not
- * block it; the URL is filled in once it is known.
- */
+/** Tools the integrations API connects through Nango (server `nango/index.ts`). */
+const TOOL_PROVIDERS = new Set(['slack', 'outlook', 'zoom', 'google-calendar', 'granola', 'fathom', 'intercom', 'notion'])
+
+/** Opened synchronously inside the click so browsers do not block it. */
 function openPopup(name: string): Window {
   const width = 520
   const height = 720
   const left = Math.max(0, window.screenX + (window.outerWidth - width) / 2)
   const top = Math.max(0, window.screenY + (window.outerHeight - height) / 2)
   const popup = window.open('', name, `width=${width},height=${height},left=${left},top=${top}`)
-  if (!popup) {
-    throw new IntegrationApiError(0, 'The sign-in window was blocked. Allow pop-ups for this site and try again.')
-  }
+  if (!popup) throw new IntegrationApiError(0, 'The sign-in window was blocked. Allow pop-ups for this site and try again.')
   return popup
 }
+
+/** A promise that never settles — the page is navigating away. */
+const navigating = () => new Promise<never>(() => undefined)
 
 export interface ConnectResult {
   account: IntegrationAccount
@@ -58,142 +49,55 @@ export function useIntegrationActions() {
   const platform = usePlatform()
   const qc = useQueryClient()
   const live = platform.integrationsMode === 'live'
-  const { integrationContext } = platform
+  const { getToken } = platform.integrationContext
 
-  /* ------------------------------------------------------------ Google */
-
-  const connectGoogle = useCallback(
-    async (clientId: string | undefined, popup: Window): Promise<ConnectResult> => {
-      if (!clientId) {
-        popup.close()
-        throw new IntegrationApiError(400, 'Choose the client this Google login is for.')
-      }
-      const workspaceId = integrationContext.workspaceIdForClient(clientId)
-      if (!workspaceId) {
-        popup.close()
-        throw new IntegrationApiError(
-          404,
-          'This client has no data workspace yet, so it cannot hold a Google connection. Create the client in Tru Reporting first.',
-        )
-      }
-
-      /* Baseline, to tell a fresh grant from what was already there. */
-      const before = await integrationApi.googleStatus(workspaceId).catch(() => null)
-      const beforeScopes = new Set(before?.scopes_granted ?? [])
-
-      popup.location.href = integrationApi.googleStartUrl(workspaceId, ALL_GOOGLE_TOOLS)
-
-      /*
-       * Google's callback redirects the popup to the Tru Reporting app, never
-       * back here, so completion is observed from the backend: the connection
-       * appears or its granted scopes change. A user who re-grants identical
-       * scopes finishes by closing the window.
-       */
-      const started = Date.now()
-      let completed = false
-      while (Date.now() - started < POPUP_TIMEOUT_MS) {
-        await sleep(POLL_MS)
-        const closed = popup.closed
-        const now = await integrationApi.googleStatus(workspaceId).catch(() => null)
-        const scopes = now?.scopes_granted ?? []
-        const changed =
-          Boolean(now?.connected) &&
-          (!before?.connected || scopes.length !== beforeScopes.size || scopes.some((s) => !beforeScopes.has(s)))
-        if (changed || (closed && now?.connected)) {
-          completed = true
-          break
-        }
-        if (closed) break
-      }
-      if (!popup.closed) popup.close()
-
-      await qc.invalidateQueries({ queryKey: integrationKeys.googleStatus(workspaceId) })
-      await qc.invalidateQueries({ queryKey: integrationKeys.googleDiscovery(workspaceId) })
-
-      if (!completed) {
-        throw new IntegrationApiError(
-          0,
-          'Google sign-in was not completed. If you declined access or closed the window early, try again.',
-        )
-      }
-
-      const status = await integrationApi.googleStatus(workspaceId)
-      const discovery = await integrationApi.googleDiscovery(workspaceId).catch(() => null)
-      const client = platform.workspaces.reporting?.find((w) => w.id === clientId)
-      const granted = GOOGLE_SERVICES.filter((s) => (status.scopes_granted ?? []).includes(s.scope))
-      return {
-        account: {
-          id: googleAccountId(workspaceId),
-          provider: GOOGLE_PROVIDER,
-          scope: { kind: 'client', osId: 'reporting', workspaceId: clientId },
-          connectedIn: 'reporting',
-          label: `${client?.name ?? 'Client'} · Google`,
-          externalAccountId: workspaceId,
-          status: 'connected',
-          services: granted.map((s) => s.service),
-          grantedScopes: granted.map((s) => s.shortScope),
-          connectedAt: new Date().toISOString(),
-          connectedBy: 'You',
-        },
-        resources: discovery ? googleResources(workspaceId, discovery) : [],
-      }
+  /* Google: full-page OAuth; Google returns to HiveX, which refreshes on arrival. */
+  const startGoogle = useCallback(
+    async (clientId: string | undefined, tools?: GoogleTool[]): Promise<never> => {
+      if (!clientId) throw new IntegrationApiError(400, 'Choose the client this Google login is for.')
+      const returnTo = `${window.location.pathname}${window.location.search}`
+      const { url } = await integrationApi.googleConnectUrl(await getToken(), clientId, returnTo, tools)
+      window.location.assign(url)
+      return navigating()
     },
-    [integrationContext, platform.workspaces.reporting, qc],
+    [getToken],
   )
 
-  /* ------------------------------------------------------------ Nango */
-
-  const connectNango = useCallback(
+  /* Tools: Nango Connect in a popup; completion is the window closing, then finalize. */
+  const connectTool = useCallback(
     async (provider: string, popup: Window): Promise<ConnectResult> => {
-      const workspaceId = integrationContext.primaryWorkspaceId
-      if (!workspaceId) {
-        popup.close()
-        throw new IntegrationApiError(
-          404,
-          'No data workspace is available for your account yet, so tools cannot be connected.',
-        )
-      }
-      const token = await integrationContext.getToken()
-
-      let session
       try {
-        session = await integrationApi.nangoConnectSession(token, provider, workspaceId)
+        const session = await integrationApi.toolConnectSession(await getToken(), provider)
+        if (!session.connect_link) throw new IntegrationApiError(502, `${providerName(provider)} did not return a connect link.`)
+        popup.location.href = session.connect_link
       } catch (error) {
         popup.close()
         throw error
       }
-      if (!session.connect_link) {
-        popup.close()
-        throw new IntegrationApiError(502, `${providerName(provider)} did not return a connect link.`)
-      }
-      popup.location.href = session.connect_link
 
-      /* Same completion signal Reporting OS uses: the Connect window closes. */
       const started = Date.now()
-      while (!popup.closed && Date.now() - started < POPUP_TIMEOUT_MS) {
-        await sleep(800)
-      }
+      while (!popup.closed && Date.now() - started < POPUP_TIMEOUT_MS) await sleep(800)
       if (!popup.closed) popup.close()
 
       try {
-        await integrationApi.nangoFinalize(await integrationContext.getToken(), provider, workspaceId)
+        await integrationApi.toolFinalize(await getToken(), provider)
       } catch (error) {
         if (error instanceof IntegrationApiError && error.status === 400) {
-          throw new IntegrationApiError(400, `${providerName(provider)} was not connected — the connection window closed before finishing.`)
+          throw new IntegrationApiError(400, `${providerName(provider)} was not connected — the window closed before finishing.`)
         }
         throw error
       } finally {
-        await qc.invalidateQueries({ queryKey: integrationKeys.nangoStatus(workspaceId) })
+        await qc.invalidateQueries({ queryKey: integrationKeys.tools() })
       }
 
       return {
         account: {
-          id: nangoAccountId(provider),
+          id: toolAccountId(provider),
           provider,
           scope: { kind: 'organization' },
           connectedIn: 'reporting',
           label: providerName(provider),
-          externalAccountId: workspaceId,
+          externalAccountId: provider,
           status: 'connected',
           services: [provider],
           grantedScopes: [],
@@ -203,15 +107,10 @@ export function useIntegrationActions() {
         resources: [],
       }
     },
-    [integrationContext, qc],
+    [getToken, qc],
   )
 
-  /* ------------------------------------------------------------ public */
-
-  /**
-   * Authorize one account. Must be called directly from a click handler: the
-   * provider window is opened before the first await.
-   */
+  /** Authorize one account. Call directly from a click handler (a popup may open before the first await). */
   const authorize = useCallback(
     async (
       provider: string,
@@ -223,92 +122,64 @@ export function useIntegrationActions() {
           existingLabels: options.existingLabels,
           connectedIn: options.osId,
         })
-        const resources = await integrationService.discoverResources(account)
-        return { account, resources }
+        return { account, resources: await integrationService.discoverResources(account) }
       }
-
-      if (provider !== GOOGLE_PROVIDER && !isNangoProvider(provider)) {
-        throw new IntegrationApiError(
-          501,
-          `${providerName(provider)} is not available yet — the integrations backend does not support it.`,
-        )
+      if (provider === GOOGLE_PROVIDER) return startGoogle(options.clientId)
+      if (!TOOL_PROVIDERS.has(provider)) {
+        throw new IntegrationApiError(501, `${providerName(provider)} is not available yet — the integrations backend does not support it.`)
       }
-
-      const popup = openPopup(`hivex-connect-${provider}`)
-      return provider === GOOGLE_PROVIDER
-        ? connectGoogle(options.clientId, popup)
-        : connectNango(provider, popup)
+      return connectTool(provider, openPopup(`hivex-connect-${provider}`))
     },
-    [live, connectGoogle, connectNango],
+    [live, startGoogle, connectTool],
   )
 
-  /** Sync now. Google: the backend's per-client connector sync. Tools: refresh status. */
+  /** Sync now: Google runs the real connector sync for the client; tools refresh their status. */
   const sync = useCallback(
     async (account: IntegrationAccount): Promise<{ syncedAt: string }> => {
       if (!live) return integrationService.syncAccount(account.id)
-
       const parsed = parseAccountId(account.id)
-      if (parsed?.kind === 'google' && account.scope.kind === 'client') {
-        await integrationApi.syncClient(await integrationContext.getToken(), account.scope.workspaceId)
-        await qc.invalidateQueries({ queryKey: integrationKeys.all })
+      if (parsed?.kind === 'google') {
+        await integrationApi.syncClient(await getToken(), parsed.clientId)
+        await qc.invalidateQueries({ queryKey: integrationKeys.google() })
       } else {
-        await qc.refetchQueries({ queryKey: integrationKeys.all })
+        await qc.refetchQueries({ queryKey: integrationKeys.tools() })
       }
       return { syncedAt: new Date().toISOString() }
     },
-    [live, integrationContext, qc],
+    [live, getToken, qc],
   )
 
-  /** Re-authorize the same login, keeping backend mappings. */
+  /** Re-authorize the same login; existing assignments are kept. */
   const reconnect = useCallback(
     async (account: IntegrationAccount): Promise<IntegrationAccount> => {
       if (!live) return integrationService.reconnectAccount(account)
-      const clientId = account.scope.kind === 'client' ? account.scope.workspaceId : undefined
-      const popup = openPopup(`hivex-connect-${account.provider}`)
-      const result =
-        account.provider === GOOGLE_PROVIDER
-          ? await connectGoogle(clientId, popup)
-          : await connectNango(account.provider, popup)
-      return result.account
+      const parsed = parseAccountId(account.id)
+      if (parsed?.kind === 'google') return startGoogle(parsed.clientId)
+      return (await connectTool(account.provider, openPopup(`hivex-connect-${account.provider}`))).account
     },
-    [live, connectGoogle, connectNango],
+    [live, startGoogle, connectTool],
   )
 
-  /**
-   * Disconnect on the backend.
-   *
-   * Google: the backend disconnects per tool; every tool this login granted is
-   * disconnected, which removes its tokens and, once none remain, the
-   * connection itself. Tools: the caller's own Nango connection is removed.
-   */
+  /** Disconnect on the server: Google per granted tool; tools remove the caller's own connection. */
   const disconnect = useCallback(
     async (account: IntegrationAccount): Promise<void> => {
       if (!live) return integrationService.disconnectAccount(account.id)
-
       const parsed = parseAccountId(account.id)
       if (parsed?.kind === 'google') {
         const tools = GOOGLE_SERVICES.filter((s) => account.services.includes(s.service)).map((s) => s.tool)
-        for (const tool of tools.length > 0 ? tools : ALL_GOOGLE_TOOLS) {
-          try {
-            await integrationApi.disconnectGoogleTool(parsed.workspaceId, tool)
-          } catch (error) {
-            // Nothing left to remove for this tool (the connection is already gone).
-            if (!(error instanceof IntegrationApiError && error.status === 404)) throw error
-          }
-        }
-        await qc.invalidateQueries({ queryKey: integrationKeys.googleStatus(parsed.workspaceId) })
-        qc.removeQueries({ queryKey: integrationKeys.googleDiscovery(parsed.workspaceId) })
+        await integrationApi.disconnectGoogle(await getToken(), parsed.clientId, tools.length ? tools : undefined)
+        qc.removeQueries({ queryKey: integrationKeys.googleDiscovery(parsed.clientId) })
+        await qc.invalidateQueries({ queryKey: integrationKeys.google() })
         return
       }
-      if (parsed?.kind === 'nango') {
-        const workspaceId = account.externalAccountId
-        await integrationApi.nangoDisconnect(await integrationContext.getToken(), parsed.provider, workspaceId)
-        await qc.invalidateQueries({ queryKey: integrationKeys.nangoStatus(workspaceId) })
+      if (parsed?.kind === 'tool') {
+        await integrationApi.toolDisconnect(await getToken(), parsed.provider)
+        await qc.invalidateQueries({ queryKey: integrationKeys.tools() })
         return
       }
       throw new IntegrationApiError(400, 'This account is not managed by the integrations backend.')
     },
-    [live, integrationContext, qc],
+    [live, getToken, qc],
   )
 
   return { live, authorize, sync, reconnect, disconnect }
