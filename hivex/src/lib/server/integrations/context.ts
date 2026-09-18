@@ -118,8 +118,13 @@ export async function visibleClients(ctx: IntegrationContext): Promise<ClientRow
     }
   }
 
-  const clients = must(await query.order('created_at', { ascending: true }), 'Client lookup') as ClientRow[]
-  return clients
+  /*
+   * Sorted here, not by the database: `client` has no created_at column in the
+   * live schema (it carries startedOn instead), and ordering on a missing
+   * column makes PostgREST reject the whole query.
+   */
+  const clients = must(await query, 'Client lookup') as ClientRow[]
+  return [...clients].sort((a, b) => (a.name ?? a.key).localeCompare(b.name ?? b.key))
 }
 
 /** A client the caller may use, or 404 — never another company's client. */

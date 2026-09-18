@@ -1,13 +1,13 @@
 'use client'
 
-import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useToast } from '@/components/ui/toast'
 import { useIdentity } from '@/lib/state/identity-provider'
 import type { IntegrationAccount, IntegrationMapping, IntegrationResource, Workspace } from '@/platform/types'
 
-import { IntegrationApiError, integrationApi, type GoogleDiscovery } from './api'
+import { IntegrationApiError, integrationApi, type GoogleAccount, type GoogleDiscovery, type GoogleService } from './api'
 import { clientToWorkspace, googleAccount, googleMappings, googleResources, toolAccount } from './model'
 
 /**
@@ -28,6 +28,7 @@ export const integrationKeys = {
   google: () => [...integrationKeys.all, 'google'] as const,
   googleStatus: () => [...integrationKeys.google(), 'status'] as const,
   googleDiscovery: (clientId: string) => [...integrationKeys.google(), 'discovery', clientId] as const,
+  googleAccounts: () => [...integrationKeys.google(), 'accounts'] as const,
   tools: () => [...integrationKeys.all, 'tools'] as const,
   toolTargets: (provider: string) => [...integrationKeys.tools(), 'targets', provider] as const,
 }
@@ -177,4 +178,92 @@ function useOAuthReturn(active: boolean) {
     ;['google', 'client', 'message', 'discovery_errors'].forEach((key) => url.searchParams.delete(key))
     window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
   }, [active, qc, toast])
+}
+
+/* -------------------------------------------------------------------------- */
+/* Google accounts                                                             */
+/* -------------------------------------------------------------------------- */
+
+export interface GoogleAccountsApi {
+  accounts: GoogleAccount[]
+  isLoading: boolean
+  error: string | null
+  /** Assign one resource of an account to a client (writes the mapping the sync reads). */
+  assign: (input: {
+    accountId: string
+    clientId: string
+    service: Exclude<GoogleService, 'gbp'>
+    externalId: string
+  }) => Promise<{ moved_account: boolean; cleared: string[] }>
+  unassign: (input: { clientId: string; service: Exclude<GoogleService, 'gbp'> }) => Promise<void>
+  disconnect: (accountId: string) => Promise<void>
+  isMutating: boolean
+}
+
+/**
+ * The Google accounts connected for the organization, with their resources and
+ * client assignments. Mutations invalidate the Google queries so the section,
+ * the connector cards and the mapping table all refresh together.
+ */
+export function useGoogleAccounts(enabled: boolean): GoogleAccountsApi {
+  const qc = useQueryClient()
+  const identity = useIdentity()
+  const { getToken: identityToken } = identity
+  const active = enabled && identity.isLoaded && identity.isSignedIn
+
+  const getToken = useCallback(async () => {
+    const token = await identityToken()
+    if (!token) throw new IntegrationApiError(401, 'Your session has expired. Sign in again.')
+    return token
+  }, [identityToken])
+
+  const accountsQuery = useQuery({
+    queryKey: integrationKeys.googleAccounts(),
+    enabled: active,
+    ...FRESHNESS,
+    queryFn: async () => integrationApi.googleAccounts(await getToken()),
+  })
+
+  const refresh = useCallback(() => qc.invalidateQueries({ queryKey: integrationKeys.google() }), [qc])
+
+  const assignMutation = useMutation({
+    mutationFn: async (input: { accountId: string; clientId: string; service: Exclude<GoogleService, 'gbp'>; externalId: string }) =>
+      integrationApi.assignResource(await getToken(), {
+        account_id: input.accountId,
+        client_id: input.clientId,
+        service: input.service,
+        external_id: input.externalId,
+      }),
+    onSuccess: refresh,
+  })
+
+  const unassignMutation = useMutation({
+    mutationFn: async (input: { clientId: string; service: Exclude<GoogleService, 'gbp'> }) =>
+      integrationApi.unassignResource(await getToken(), { client_id: input.clientId, service: input.service }),
+    onSuccess: refresh,
+  })
+
+  const disconnectMutation = useMutation({
+    mutationFn: async (accountId: string) => integrationApi.disconnectAccount(await getToken(), accountId),
+    onSuccess: refresh,
+  })
+
+  useErrorToast(accountsQuery.error instanceof Error ? accountsQuery.error.message : null)
+
+  return {
+    accounts: accountsQuery.data ?? [],
+    isLoading: active && accountsQuery.isLoading,
+    error: accountsQuery.error instanceof Error ? accountsQuery.error.message : null,
+    assign: async (input) => {
+      const result = await assignMutation.mutateAsync(input)
+      return { moved_account: result.moved_account, cleared: result.cleared }
+    },
+    unassign: async (input) => {
+      await unassignMutation.mutateAsync(input)
+    },
+    disconnect: async (accountId) => {
+      await disconnectMutation.mutateAsync(accountId)
+    },
+    isMutating: assignMutation.isPending || unassignMutation.isPending || disconnectMutation.isPending,
+  }
 }

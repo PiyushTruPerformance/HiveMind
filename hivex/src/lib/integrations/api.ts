@@ -64,6 +64,36 @@ export interface GoogleMappingRequest {
   google_ads_customer_name?: string
 }
 
+export type GoogleService = 'ga4' | 'gsc' | 'google-ads' | 'gbp'
+
+export interface GoogleAccountResource {
+  service: GoogleService
+  external_id: string
+  name: string
+  subtitle: string | null
+  /** Clients consuming this exact resource. */
+  client_ids: string[]
+}
+
+export interface GoogleAccountClientUse {
+  client_id: string
+  ga4_property_id: string | null
+  gsc_property_url: string | null
+  google_ads_customer_id: string | null
+}
+
+/** One connected Google identity: its resources and the clients using them. */
+export interface GoogleAccount {
+  id: string
+  email: string | null
+  owner_client_id: string | null
+  status: string
+  connected_at: string | null
+  scopes_granted: string[]
+  resources: GoogleAccountResource[]
+  clients: GoogleAccountClientUse[]
+}
+
 export interface ToolStatus {
   supported: string[]
   connected_providers: string[]
@@ -174,6 +204,32 @@ export const integrationApi = {
 
   syncClient: (token: string, clientId: string) =>
     request<Record<string, unknown>>(token, '/google/sync', { method: 'POST', json: { client_id: clientId } }, 'Sync failed'),
+
+  /* Google accounts: identities, their resources and client assignments */
+  googleAccounts: (token: string) =>
+    request<GoogleAccount[]>(token, '/google/accounts', {}, 'Could not load Google accounts'),
+
+  assignResource: (
+    token: string,
+    body: { account_id: string; client_id: string; service: Exclude<GoogleService, 'gbp'>; external_id: string },
+  ) =>
+    request<{ status: string; moved_account: boolean; cleared: string[] }>(
+      token,
+      '/google/assign',
+      { method: 'POST', json: body },
+      'Could not save the assignment',
+    ),
+
+  unassignResource: (token: string, body: { client_id: string; service: Exclude<GoogleService, 'gbp'> }) =>
+    request<{ status: string }>(token, '/google/assign', { method: 'DELETE', json: body }, 'Could not remove the assignment'),
+
+  disconnectAccount: (token: string, accountId: string) =>
+    request<{ status: string }>(
+      token,
+      '/google/disconnect',
+      { method: 'POST', json: { account_id: accountId } },
+      'Could not disconnect this Google account',
+    ),
 
   /* Tool connectors (Nango, per user) */
   toolStatus: (token: string) => request<ToolStatus>(token, '/tools', {}, 'Could not load tool connections'),

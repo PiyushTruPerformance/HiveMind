@@ -11,6 +11,7 @@ import { useAccess } from '@/lib/access/useAccess'
 import { usePlatform } from '@/lib/state/platform-provider'
 import { cn } from '@/lib/utils/cn'
 import { INTEGRATIONS, INTEGRATION_CATEGORY_META } from '@/platform/config/integrations'
+import type { IntegrationDefinition } from '@/platform/types'
 import { OS_LIST } from '@/platform/config/os-registry'
 import { formatLimit } from '@/platform/config/plans'
 import type { IntegrationCategory, OSId } from '@/platform/types'
@@ -31,10 +32,13 @@ export function IntegrationBrowser({
   compact,
   /** Narrows the catalog to one product's scope; omitted = organization-wide. */
   osId,
+  /** Subset of the catalog to browse; omitted = everything. */
+  catalog = INTEGRATIONS,
 }: {
   focusId?: string
   compact?: boolean
   osId?: OSId
+  catalog?: IntegrationDefinition[]
 }) {
   const { accounts, subscriptions, serviceStatus } = usePlatform()
   const access = useAccess()
@@ -70,7 +74,7 @@ export function IntegrationBrowser({
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
-    return INTEGRATIONS.filter((integration) => {
+    return catalog.filter((integration) => {
       if (category !== 'all' && integration.category !== category) return false
       if (osFilter !== 'all' && !integration.usedBy.includes(osFilter)) return false
 
@@ -84,14 +88,14 @@ export function IntegrationBrowser({
         .toLowerCase()
         .includes(q)
     })
-  }, [query, category, osFilter, statusFilter, serviceStatus, osId])
+  }, [catalog, query, category, osFilter, statusFilter, serviceStatus, osId])
 
   const categories = useMemo(() => {
-    const present = new Set(INTEGRATIONS.map((i) => i.category))
+    const present = new Set(catalog.map((i) => i.category))
     return (Object.keys(INTEGRATION_CATEGORY_META) as IntegrationCategory[]).filter((c) =>
       present.has(c),
     )
-  }, [])
+  }, [catalog])
 
   return (
     <div className="space-y-5">

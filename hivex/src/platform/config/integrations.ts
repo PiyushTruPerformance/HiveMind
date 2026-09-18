@@ -497,6 +497,58 @@ export const GOOGLE_DATA_SOURCE_IDS = ['ga4', 'gsc', 'google-ads', 'gbp'] as con
  */
 export const GOOGLE_PROVIDER = 'google'
 
+/* -------------------------------------------------------------------------- */
+/* Connector kinds                                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What a connection is *for* — the split the Integrations page is built around.
+ *
+ *   data  Brings business data into the platform: the first-party Google
+ *         pipeline (GA4, Search Console, Ads, Business Profile), authorized per
+ *         client and synced into reports.
+ *   tool  Lets Ask Tru act in an external tool (send, read, schedule). These run
+ *         through Nango and belong to the person who connected them.
+ *
+ * Only providers the integrations backend actually implements are classified;
+ * everything else in the catalog stays browsable but is not presented as a
+ * working connector. Derived from the catalog, so a new entry needs no second
+ * definition here.
+ */
+export type ConnectorKind = 'data' | 'tool'
+
+/** Tool connectors the backend supports (server lib/server/integrations/nango). */
+const TOOL_CONNECTOR_IDS = [
+  'slack',
+  'outlook',
+  'zoom',
+  'google-calendar',
+  'granola',
+  'notion',
+  'fathom',
+  'intercom',
+] as const
+
+export function connectorKind(integrationId: string): ConnectorKind | null {
+  const integration = INTEGRATION_MAP[integrationId]
+  if (!integration) return null
+  if (integration.authType === 'google_oauth') return 'data'
+  return (TOOL_CONNECTOR_IDS as readonly string[]).includes(integrationId) ? 'tool' : null
+}
+
+export const DATA_CONNECTORS: IntegrationDefinition[] = INTEGRATIONS.filter(
+  (i) => connectorKind(i.id) === 'data',
+)
+
+export const TOOL_CONNECTORS: IntegrationDefinition[] = TOOL_CONNECTOR_IDS.map(
+  (id) => INTEGRATION_MAP[id],
+).filter(Boolean)
+
+/** Catalog entries with no backend connector yet — browsable, not presented as live. */
+export const CATALOG_ONLY: IntegrationDefinition[] = INTEGRATIONS.filter(
+  (i) => connectorKind(i.id) === null,
+)
+
 export function providerKeyFor(integrationId: string): string {
   const integration = INTEGRATION_MAP[integrationId]
   if (!integration) return integrationId
