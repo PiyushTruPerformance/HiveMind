@@ -207,9 +207,10 @@ function AccountCard({
         {(Object.keys(SERVICE_LABEL) as GoogleService[])
           .filter((service) => counts[service])
           .map((service) => (
-            <Tooltip key={service} content={SERVICE_LABEL[service]}>
+            <Tooltip key={service} content={getIntegration(SERVICE_INTEGRATION[service])?.name ?? service}>
               <span className="rounded-md border bg-surface px-1.5 py-0.5 text-2xs text-muted-foreground">
-                {counts[service]} {getIntegration(SERVICE_INTEGRATION[service])?.name ?? service}
+                {counts[service]} {SERVICE_LABEL[service]}
+                {counts[service]! > 1 ? 's' : ''}
               </span>
             </Tooltip>
           ))}

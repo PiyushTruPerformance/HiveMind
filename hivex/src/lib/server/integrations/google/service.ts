@@ -737,14 +737,15 @@ export async function assignResource(
     [column]: value,
   }
   if (movedAccount) {
-    for (const [col, held] of [
-      ['ga4_property_id', current?.ga4_property_id],
-      ['gsc_property_url', current?.gsc_property_url],
-      ['google_ads_customer_id', current?.google_ads_customer_id],
+    /* Reported as services, since that is what the caller and the user name them by. */
+    for (const [col, held, service] of [
+      ['ga4_property_id', current?.ga4_property_id, 'ga4'],
+      ['gsc_property_url', current?.gsc_property_url, 'gsc'],
+      ['google_ads_customer_id', current?.google_ads_customer_id, 'google-ads'],
     ] as const) {
       if (col !== column && held) {
         payload[col] = null
-        cleared.push(col)
+        cleared.push(service)
       }
     }
   }
